@@ -2,8 +2,8 @@ package com.digixmed.icu.viform.service;
 
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.entity.Patient;
-import com.digixmed.icu.viform.repository.BedsideRepository;
-import com.digixmed.icu.viform.repository.PatientRepository;
+import com.digixmed.icu.viform.repository.smartcare.BedsideRepository;
+import com.digixmed.icu.viform.repository.smartcare.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;

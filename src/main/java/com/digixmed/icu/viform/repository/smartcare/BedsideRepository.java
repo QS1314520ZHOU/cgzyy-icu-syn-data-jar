@@ -1,4 +1,4 @@
-package com.digixmed.icu.viform.repository;
+package com.digixmed.icu.viform.repository.smartcare;
 
 import com.digixmed.icu.viform.entity.Bedside;
 import org.springframework.data.mongodb.repository.MongoRepository;
@@ -7,7 +7,7 @@ import java.util.Collection;
 import java.util.List;
 
 /**
- * bedside 集合仓库。
+ * bedside 集合仓库（SmartCare 库）。
  */
 public interface BedsideRepository extends MongoRepository<Bedside, String> {
 

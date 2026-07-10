@@ -1,14 +1,6 @@
 spring:
   application:
     name: cgzyy-icu-syn-data
-  data:
-    mongodb:
-      host: ${MONGO_HOST:10.35.4.11}
-      port: ${MONGO_PORT:32121}
-      database: ${MONGO_DATABASE:SmartCare}
-      username: ${MONGO_USERNAME:dxm}
-      password: ${MONGO_PASSWORD:DB@dmin}
-      authentication-database: ${MONGO_AUTH_DB:SmartCare}
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
     time-zone: GMT+8
@@ -18,9 +10,84 @@ server:
 
 hospitalLog: ${HOSPITAL_NAME:重钢总医院}
 
-# 自定义业务开关
+# ===================================================================
+# 双数据源 MongoDB 配置（不使用 spring.data.mongodb 自动配置）
+# ===================================================================
+data:
+  mongodb:
+    smartcare:
+      uri: mongodb://dxm:DB%40dmin@10.35.4.11:32121/SmartCare?maxPoolSize=100&waitQueueTimeoutMS=2000&connectTimeoutMS=3000&socketTimeoutMS=5000
+    datacenter:
+      uri: mongodb://data:Data%40dmin@10.35.4.11:32121/DataCenter?maxPoolSize=100&waitQueueTimeoutMS=2000&connectTimeoutMS=3000&socketTimeoutMS=5000
+
+# ===================================================================
+# 原有业务开关（向后兼容）
+# ===================================================================
 syn:
-  # 是否在应用启动时自动执行一次处理逻辑
   run-on-startup: ${SYN_RUN_ON_STARTUP:false}
-  # 关注的 bedside code 列表（为空表示不过滤，读取全部）
   bedside-codes: ${SYN_BEDSIDE_CODES:param_亚低温治疗}
+
+# ===================================================================
+# bedside 定时同步配置（值前推补写）
+# 每天在「时间点前 advance-minutes 分钟」触发对应分组的同步
+# ===================================================================
+sync:
+  advance-minutes: 5                     # 提前量（分钟），如 10:00 同步于 09:55 触发
+  timezone: Asia/Shanghai
+  edit-user: 6a1f9f01e467916d244bbdaa   # 系统写入账号
+  groups:
+    - name: temperature-nibp
+      description: 体温部位、NIBP部位
+      times: ["02:00","06:00","10:00","14:00","18:00","22:00"]
+      codes:
+        - param_tiWenBuWei
+        - param_NIBP部位
+
+    - name: intubation-airway
+      description: 插管方式/查管长度/床头抬高/吸痰护理
+      times: ["00:00","08:00","16:00"]
+      codes:
+        - param_插管方式
+        - param_chaGuan_len
+        - param_chuangtouTaigao
+        - param_吸痰护理
+
+    - name: iabp
+      description: IABP 主动脉球囊反搏相关
+      times: ["09:00","13:00","17:00","21:00"]
+      codes:
+        - param_是否正确执行冲洗导管与校零
+        - param_触发模式
+        - param_触发信号
+        - param_反博辅助频率
+        - param_压力波形是否规则
+        - param_球囊导管固定是否有效
+        - param_球囊导管内有无回血
+        - param_氮气瓶压力是否充足
+        - param_穿刺部位
+        - param_置入/外露长度
+        - param_左上肢是否可扪及桡动脉搏动
+        - param_左上肢远端肢体有无紫绀及肿胀
+        - param_穿刺侧肢体远端动脉搏动是否可扪及
+        - param_穿刺侧肢体远端肢体有无紫绀及肿胀
+
+# ===================================================================
+# 医嘱驱动 bedside 同步配置（param_biSiLiquid 鼻饲液）
+# ===================================================================
+order-sync:
+  name: bisi-liquid
+  target-code: param_biSiLiquid
+  order-status: 在执行
+  edit-user: 6a1f9f01e467916d244bbdaa
+  order-name-keywords:
+    - 禁食禁水
+    - 禁食
+    - 禁水
+    - 禁食不禁水
+    - 流质
+    - 半流质
+    - 软食
+    - 普食
+    - 低盐低脂饮食
+    - 糖尿病饮食
+    - 其它

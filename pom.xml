@@ -7,7 +7,7 @@
     <parent>
         <groupId>org.springframework.boot</groupId>
         <artifactId>spring-boot-starter-parent</artifactId>
-        <version>3.2.5</version>
+        <version>2.7.18</version>
         <relativePath/>
     </parent>
 
@@ -18,7 +18,7 @@
     <description>ICU 数据处理任务：从 SmartCare MongoDB 读取在院患者及其 bedside 记录并执行业务逻辑</description>
 
     <properties>
-        <java.version>17</java.version>
+        <java.version>11</java.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 

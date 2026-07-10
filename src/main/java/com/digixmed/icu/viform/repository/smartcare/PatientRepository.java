@@ -1,4 +1,4 @@
-package com.digixmed.icu.viform.repository;
+package com.digixmed.icu.viform.repository.smartcare;
 
 import com.digixmed.icu.viform.entity.Patient;
 import org.springframework.data.mongodb.repository.MongoRepository;
@@ -6,7 +6,7 @@ import org.springframework.data.mongodb.repository.MongoRepository;
 import java.util.List;
 
 /**
- * patient 集合仓库。
+ * patient 集合仓库（SmartCare 库）。
  */
 public interface PatientRepository extends MongoRepository<Patient, String> {
 

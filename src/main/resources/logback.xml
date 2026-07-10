@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration scan="true" scanPeriod="60 seconds" debug="false">
+    <contextName>cgzyy-icu-syn</contextName>
+    <property name="log.path" value="logs"/>
+    <property name="application.name" value="cgzyyIcuSynData"/>
+
+    <!-- ============================ 控制台 ============================ -->
+    <appender name="console" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>INFO</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} %contextName [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============================ 业务日志：INFO ============================ -->
+    <appender name="info" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.path}/${application.name}/info.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.path}/${application.name}/info.%d{yyyy-MM-dd}.log.zip</fileNamePattern>
+            <maxHistory>30</maxHistory>
+        </rollingPolicy>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>ALL</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>NEUTRAL</onMismatch>
+        </filter>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>INFO</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %contextName [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============================ 业务日志：WARN ============================ -->
+    <appender name="warn" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.path}/${application.name}/warn.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.path}/${application.name}/warn.%d{yyyy-MM-dd}.log.zip</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>FATAL</level>
+            <onMatch>DENY</onMatch>
+            <onMismatch>NEUTRAL</onMismatch>
+        </filter>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>WARN</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %contextName [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ============================ 业务日志：ERROR ============================ -->
+    <appender name="error" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.path}/${application.name}/error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.path}/${application.name}/error.%d{yyyy-MM-dd}.log.zip</fileNamePattern>
+            <maxHistory>30</maxHistory>
+            <totalSizeCap>1GB</totalSizeCap>
+        </rollingPolicy>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>FATAL</level>
+            <onMatch>DENY</onMatch>
+            <onMismatch>NEUTRAL</onMismatch>
+        </filter>
+        <filter class="ch.qos.logback.classic.filter.LevelFilter">
+            <level>ERROR</level>
+            <onMatch>ACCEPT</onMatch>
+            <onMismatch>DENY</onMismatch>
+        </filter>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} %contextName [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ======================== 同步专用日志：INFO ======================== -->
+    <appender name="sync-info" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.path}/${application.name}/sync-info.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.path}/${application.name}/sync-info.%d{yyyy-MM-dd}.log.zip</fileNamePattern>
+            <maxHistory>60</maxHistory>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ======================== 同步专用日志：ERROR ======================== -->
+    <appender name="sync-error" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <file>${log.path}/${application.name}/sync-error.log</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.TimeBasedRollingPolicy">
+            <fileNamePattern>${log.path}/${application.name}/sync-error.%d{yyyy-MM-dd}.log.zip</fileNamePattern>
+            <maxHistory>60</maxHistory>
+            <totalSizeCap>500MB</totalSizeCap>
+        </rollingPolicy>
+        <encoder>
+            <pattern>%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- ======================== 包级 Logger 配置 ======================== -->
+
+    <!-- 同步相关：输出到 sync-info 和 sync-error -->
+    <logger name="com.digixmed.icu.viform.service.ParamTimedSyncService" level="INFO" additivity="true">
+        <appender-ref ref="sync-info"/>
+    </logger>
+    <logger name="com.digixmed.icu.viform.service.OrderSyncService" level="INFO" additivity="true">
+        <appender-ref ref="sync-info"/>
+    </logger>
+    <logger name="com.digixmed.icu.viform.scheduler" level="INFO" additivity="true">
+        <appender-ref ref="sync-info"/>
+    </logger>
+
+    <!-- 同步错误 → sync-error（继承 root 同时额外输出） -->
+    <logger name="com.digixmed.icu.viform.service.ParamTimedSyncService" level="WARN" additivity="false">
+        <appender-ref ref="sync-error"/>
+    </logger>
+    <logger name="com.digixmed.icu.viform.service.OrderSyncService" level="WARN" additivity="false">
+        <appender-ref ref="sync-error"/>
+    </logger>
+    <logger name="com.digixmed.icu.viform.scheduler" level="WARN" additivity="false">
+        <appender-ref ref="sync-error"/>
+    </logger>
+
+    <!-- MongoDB 查询日志（调试时可设为 DEBUG） -->
+    <logger name="org.springframework.data.mongodb" level="INFO"/>
+
+    <!-- ============================ ROOT ============================ -->
+    <root level="INFO">
+        <appender-ref ref="console"/>
+        <appender-ref ref="info"/>
+        <appender-ref ref="warn"/>
+        <appender-ref ref="error"/>
+    </root>
+
+</configuration>
