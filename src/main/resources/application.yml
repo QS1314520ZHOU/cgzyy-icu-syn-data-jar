@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: cgzyy-icu-syn-data
+  data:
+    mongodb:
+      host: ${MONGO_HOST:10.35.4.11}
+      port: ${MONGO_PORT:32121}
+      database: ${MONGO_DATABASE:SmartCare}
+      username: ${MONGO_USERNAME:dxm}
+      password: ${MONGO_PASSWORD:DB@dmin}
+      authentication-database: ${MONGO_AUTH_DB:SmartCare}
+  jackson:
+    date-format: yyyy-MM-dd HH:mm:ss
+    time-zone: GMT+8
+
+server:
+  port: ${SERVER_PORT:30001}
+
+hospitalLog: ${HOSPITAL_NAME:重钢总医院}
+
+# 自定义业务开关
+syn:
+  # 是否在应用启动时自动执行一次处理逻辑
+  run-on-startup: ${SYN_RUN_ON_STARTUP:false}
+  # 关注的 bedside code 列表（为空表示不过滤，读取全部）
+  bedside-codes: ${SYN_BEDSIDE_CODES:param_亚低温治疗}
