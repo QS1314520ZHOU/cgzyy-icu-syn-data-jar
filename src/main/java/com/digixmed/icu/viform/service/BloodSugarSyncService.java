@@ -161,7 +161,7 @@ public class BloodSugarSyncService {
                     syncHistory.setAccountId(editUser);
                     syncHistory.setDesc("系统血糖同步-sourceId=" + source.getId());
 
-                    String remark = String.format("血糖同步 detectionProject=%s specimenSource=%s",
+                    String synRemark = String.format("血糖同步 | detectionProject=%s | specimenSource=%s",
                             source.getDetectionProject() != null ? source.getDetectionProject() : "",
                             source.getSpecimenSource() != null ? source.getSpecimenSource() : "");
 
@@ -169,10 +169,12 @@ public class BloodSugarSyncService {
                             .set("strVal", sourceStrVal)
                             .set("fVal", sourceFVal)
                             .set("valid", true)
-                            .set("editUser", editUser)
-                            .set("editTime", new Date())
-                            .set("remark", remark)
-                            .set("history", Collections.singletonList(syncHistory));
+                            .set("synRemark", synRemark)                    // 血糖同步说明(程序固定)
+                            .set("editUser", editUser)                      // 程序固定
+                            .set("editTime", new Date())                    // 同步元数据
+                            .set("history", Collections.singletonList(syncHistory))
+                            .setOnInsert("_class", Bedside.BEDSIDE_CLASS);
+                    // 注意：不写 remark，避免覆盖目标 bedside 已有业务 remark
 
                     smartCareMongoTemplate.upsert(targetQuery, update, Bedside.class);
 

@@ -130,20 +130,15 @@ public class ParamTimedSyncService {
     // ==================== 单条同步 ====================
 
     /**
-     * 对单个 (患者, code) 在当前目标时间点执行前推补写。
+     * 对单个 (患者, code) 在当前目标时间点执行前推补写（变动跟随）。
+     *
+     * <p>不再使用 sync_log 做硬幂等——即使已有日志，只要源值(state: strVal/fVal/valid/remark)
+     * 发生变化，仍会重新 upsert 更新目标记录。</p>
      *
      * @return true=生成/已存在记录, false=跳过
      */
     private boolean syncOne(Patient patient, String code, Date targetTime, Date now,
                             List<Bedside> bedsides, String editUser) {
-        // --- 幂等检查：同 pid+code+targetTime 已同步则跳过 ---
-        Optional<BedsideSyncLog> existingLog = syncLogRepository
-                .findByPidAndCodeAndTargetTimePoint(patient.getId(), code, targetTime);
-        if (existingLog.isPresent()) {
-            log.debug("[ParamSync] 已同步 pid={}, code={}, targetTime={}", patient.getId(), code, targetTime);
-            return true; // 已有记录，算成功
-        }
-
         // --- 筛选有效源数据 ---
         // 条件：valid==true, strVal 非空, time <= now, time >= icuAdmissionTime
         int totalBeforeFilter = bedsides.size();
@@ -177,34 +172,52 @@ public class ParamTimedSyncService {
                 patient.getId(), code, source.getTime(), source.getStrVal(),
                 validSources.size(), totalBeforeFilter);
 
-        // --- Upsert 到 bedside 集合 ---
-        // 唯一键: (pid, code, time=targetTime)
+        // --- 变动跟随：读目标现值，比较 strVal/fVal/valid/remark ---
         Query query = new Query(Criteria.where("pid").is(patient.getId())
                 .and("code").is(code)
                 .and("time").is(targetTime));
+        Bedside currentTarget = smartCareMongoTemplate.findOne(query, Bedside.class);
 
-        // 构建 history 痕迹：追加一条"系统自动同步"，不复制旧 history
+        if (currentTarget != null
+                && Objects.equals(currentTarget.getStrVal(), source.getStrVal())
+                && Objects.equals(currentTarget.getFVal(), source.getFVal())
+                && Objects.equals(currentTarget.getValid(), source.getValid())
+                && Objects.equals(currentTarget.getRemark(), source.getRemark())) {
+            log.debug("[ParamSync] 现值与源值相同 pid={}, code={}, targetTime={}, SKIP",
+                    patient.getId(), code, String.format("%tR", targetTime));
+
+            // 仅首次没有日志时补一条 SKIP 日志
+            Optional<BedsideSyncLog> existingLog = syncLogRepository
+                    .findByPidAndCodeAndTargetTimePoint(patient.getId(), code, targetTime);
+            if (!existingLog.isPresent()) {
+                saveSkipLog(patient, code, targetTime, source.getId(), "现值与源值相同(变动跟随no-op)");
+            }
+            return true;
+        }
+
+        // --- Upsert 到 bedside 集合（变动跟随）---
         BedsideHistory syncHistory = new BedsideHistory();
         syncHistory.setTime(new Date());
         syncHistory.setAccountId(editUser);
         syncHistory.setDesc("系统定时同步-值前推补写");
 
         Update update = new Update()
-                .set("strVal", source.getStrVal())
-                .set("fVal", source.getFVal())
-                .set("valid", true)
-                .set("editUser", editUser)
-                .set("editTime", new Date())
-                .set("remark", "系统定时同步")
-                .set("history", Collections.singletonList(syncHistory));
+                .set("strVal", source.getStrVal())          // 跟随源
+                .set("fVal", source.getFVal())              // 跟随源
+                .set("valid", source.getValid())            // 跟随源
+                .set("remark", source.getRemark())          // 跟随源：remark 变化时目标跟着变
+                .set("synRemark", "系统定时同步")            // 程序固定
+                .set("editUser", editUser)                  // 程序固定
+                .set("editTime", new Date())                // 同步元数据
+                .set("history", Collections.singletonList(syncHistory))
+                .setOnInsert("_class", Bedside.BEDSIDE_CLASS);
 
         smartCareMongoTemplate.upsert(query, update, Bedside.class);
 
-        // 查询 upsert 后的记录 _id 用于日志
         Bedside upserted = smartCareMongoTemplate.findOne(query, Bedside.class);
         String generatedId = upserted != null ? upserted.getId() : null;
 
-        // --- 写同步日志 ---
+        // --- 写同步日志（每次 upsert 都记，sourceKey=源bedside.id 允许重复）---
         BedsideSyncLog syncLog = buildLog(BedsideSyncLog.TYPE_PARAM, code, patient,
                 source.getId(), targetTime, generatedId,
                 BedsideSyncLog.RESULT_SUCCESS, "源记录 time=" + source.getTime());

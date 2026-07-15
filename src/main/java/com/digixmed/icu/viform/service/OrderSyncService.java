@@ -12,6 +12,9 @@ import com.digixmed.icu.viform.repository.smartcare.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
+import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -132,24 +135,30 @@ public class OrderSyncService {
                     continue;
                 }
 
-                // 生成 bedside 记录
-                Bedside bedside = new Bedside();
-                bedside.setPid(patient.getId());
-                bedside.setCode(targetCode);
-                bedside.setTime(order.getOrderTime());
-                bedside.setStrVal(order.getOrderName());
-                bedside.setValid(true);
-                bedside.setEditUser(editUser);
-                bedside.setEditTime(new Date());
-                bedside.setRemark("医嘱同步生成");
+                // 生成 bedside 记录（upsert 模式，唯一键 pid+code+time）
+                Query query = new Query(Criteria.where("pid").is(patient.getId())
+                        .and("code").is(targetCode)
+                        .and("time").is(order.getOrderTime()));
 
                 BedsideHistory history = new BedsideHistory();
                 history.setTime(new Date());
                 history.setAccountId(editUser);
                 history.setDesc("医嘱驱动同步-orderName=" + order.getOrderName());
-                bedside.setHistory(Collections.singletonList(history));
 
-                Bedside saved = smartCareMongoTemplate.save(bedside);
+                Update update = new Update()
+                        .set("strVal", order.getOrderName())
+                        .set("valid", true)
+                        .set("synRemark", "医嘱同步生成")                   // 程序固定
+                        .set("editUser", editUser)                          // 程序固定
+                        .set("editTime", new Date())                        // 同步元数据
+                        .set("history", Collections.singletonList(history))
+                        .setOnInsert("_class", Bedside.BEDSIDE_CLASS);
+                // 注意：不写 remark/不写 fVal，避免覆盖目标 bedside 已有字段
+
+                smartCareMongoTemplate.upsert(query, update, Bedside.class);
+
+                Bedside upserted = smartCareMongoTemplate.findOne(query, Bedside.class);
+                String generatedId = upserted != null ? upserted.getId() : null;
 
                 // 写同步日志
                 BedsideSyncLog syncLog = new BedsideSyncLog();
@@ -159,14 +168,14 @@ public class OrderSyncService {
                 syncLog.setMrn(order.getMrn());
                 syncLog.setSourceKey(sourceKey);
                 syncLog.setTargetTimePoint(order.getOrderTime());
-                syncLog.setGeneratedBedsideId(saved.getId());
+                syncLog.setGeneratedBedsideId(generatedId);
                 syncLog.setResult(BedsideSyncLog.RESULT_SUCCESS);
                 syncLog.setMessage("orderName=" + order.getOrderName() + " | mrn=" + order.getMrn());
                 syncLog.setSyncTime(new Date());
                 syncLogRepository.save(syncLog);
 
                 log.info("[OrderSync] ✓ 生成 bedside pid={}, code={}, orderName=[{}], mrn={}, bedsideId={}",
-                        patient.getId(), targetCode, order.getOrderName(), order.getMrn(), saved.getId());
+                        patient.getId(), targetCode, order.getOrderName(), order.getMrn(), generatedId);
                 success++;
             } catch (Exception e) {
                 log.error("[OrderSync] 处理异常 orderId={}, mrn={}, orderName={}",

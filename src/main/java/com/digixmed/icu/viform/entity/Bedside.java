@@ -28,11 +28,22 @@ import java.util.List;
  * }
  * </pre>
  *
- * <p>说明：Mongo 文档中的 {@code _class} 字段由 Spring Data 自动处理，无需在实体中声明。</p>
+ * <p>说明：Mongo 文档中的 {@code _class} 字段由 Spring Data 自动处理。<b>自动同步生成的 bedside 必须使用
+ * {@link #BEDSIDE_CLASS} 作为 {@code _class} 值</b>（SmartCare 原类名），通过
+ * {@code setOnInsert("_class", BEDSIDE_CLASS)} 写入。</p>
  */
 @Data
 @Document("bedside")
 public class Bedside {
+
+    /**
+     * 自动同步生成的 bedside 固定 _class 值（SmartCare 库原类名）。
+     *
+     * <p>Spring Data 默认会写当前项目类名 {@code com.digixmed.icu.viform.entity.Bedside}，
+     * 但与 SmartCare 主程序期望的类名不一致，因此同步时统一用此常量做 setOnInsert。</p>
+     */
+    public static final String BEDSIDE_CLASS =
+            "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside";
 
     /** MongoDB 主键 (_id) */
     @Id
@@ -65,6 +76,27 @@ public class Bedside {
     /** 最后编辑时间 */
     private Date editTime;
 
-    /** 备注 */
+    /**
+     * 业务备注（由主程序或源数据控制）。
+     *
+     * <p>自动同步行为：</p>
+     * <ul>
+     *   <li>Param/源联动同步：跟随源记录 remark，源变目标跟着变</li>
+     *   <li>血糖/医嘱同步：不写此字段，不覆盖已有值</li>
+     * </ul>
+     */
     private String remark;
+
+    /**
+     * 自动同步备注（本同步 jar 专用，与主程序 remark 隔离）。
+     *
+     * <p>由同步程序固定写入对应的同步说明文本，不从源复制：</p>
+     * <ul>
+     *   <li>Param 定时 → "系统定时同步"</li>
+     *   <li>Source 联动 → "源联动同步"</li>
+     *   <li>血糖同步 → "血糖同步 | detectionProject=… | specimenSource=…"</li>
+     *   <li>医嘱同步 → "医嘱同步生成"</li>
+     * </ul>
+     */
+    private String synRemark;
 }

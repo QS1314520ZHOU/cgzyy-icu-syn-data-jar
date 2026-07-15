@@ -204,15 +204,14 @@ public class SourceDrivenSyncService {
                                 Collections.emptyMap());
                         Bedside currentTarget = targetMap.get(timeTMs);
 
-                        // 变动跟随：比较现值与源值
+                        // 变动跟随：比较现值与源值（strVal/fVal/valid/remark 任一不同即需更新）
                         if (currentTarget != null
                                 && Objects.equals(currentTarget.getStrVal(), source.getStrVal())
-                                && Objects.equals(currentTarget.getFVal(), source.getFVal())) {
+                                && Objects.equals(currentTarget.getFVal(), source.getFVal())
+                                && Objects.equals(currentTarget.getValid(), source.getValid())
+                                && Objects.equals(currentTarget.getRemark(), source.getRemark())) {
                             log.debug("[SourceSync] pid={}, T={}, target={}: 现值与源值相同，SKIP",
                                     pid, timeT, mapping.getTargetCode());
-                            // 不记 skip 日志以避免日志膨胀（真正的 no-op）
-                            // 如需追踪可取消下行注释：
-                            // saveSkipLog(patient, mapping.getTargetCode(), timeT, "现值与源值相同(no-op)");
                             skip++;
                             continue;
                         }
@@ -229,13 +228,15 @@ public class SourceDrivenSyncService {
                                 + "-trigger=" + rule.getTriggerCode());
 
                         Update update = new Update()
-                                .set("strVal", source.getStrVal())
-                                .set("fVal", source.getFVal())
-                                .set("valid", true)
-                                .set("editUser", editUser)
-                                .set("editTime", new Date())
-                                .set("remark", "源联动同步")
-                                .set("history", Collections.singletonList(syncHistory));
+                                .set("strVal", source.getStrVal())          // 跟随源
+                                .set("fVal", source.getFVal())              // 跟随源
+                                .set("valid", source.getValid())            // 跟随源
+                                .set("remark", source.getRemark())          // 跟随源
+                                .set("synRemark", "源联动同步")             // 程序固定
+                                .set("editUser", editUser)                  // 程序固定
+                                .set("editTime", new Date())                // 同步元数据
+                                .set("history", Collections.singletonList(syncHistory))
+                                .setOnInsert("_class", Bedside.BEDSIDE_CLASS);
 
                         smartCareMongoTemplate.upsert(query, update, Bedside.class);
 
