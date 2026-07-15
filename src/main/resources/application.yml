@@ -6,7 +6,7 @@ spring:
     time-zone: GMT+8
 
 server:
-  port: ${SERVER_PORT:30001}
+  port: ${SERVER_PORT:10241}
 
 hospitalLog: ${HOSPITAL_NAME:重钢总医院}
 
@@ -102,9 +102,9 @@ source-sync:
             - param_ibp_m
             - param_nibp_m
 
-    # --- 规则2: GEDI 触发联动 ---
-    - name: gedi
-      trigger-code: param_GEDI
+    # --- 规则2: 心输出量指数触发联动 ---
+    - name: ci
+      trigger-code: param_CI(心输出量指数)
       mappings:
         - target-code: param_CVP
           source-codes:
