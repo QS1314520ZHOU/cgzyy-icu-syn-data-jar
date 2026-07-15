@@ -4,8 +4,10 @@ import com.digixmed.icu.viform.config.OrderSyncProperties;
 import com.digixmed.icu.viform.config.SyncGroupsProperties;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.service.AdmittedPatientBedsideService;
+import com.digixmed.icu.viform.service.BloodSugarSyncService;
 import com.digixmed.icu.viform.service.OrderSyncService;
 import com.digixmed.icu.viform.service.ParamTimedSyncService;
+import com.digixmed.icu.viform.service.SourceDrivenSyncService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -33,6 +35,8 @@ public class SynDataController {
     private final AdmittedPatientBedsideService service;
     private final ParamTimedSyncService paramTimedSyncService;
     private final OrderSyncService orderSyncService;
+    private final SourceDrivenSyncService sourceDrivenSyncService;
+    private final BloodSugarSyncService bloodSugarSyncService;
     private final SyncGroupsProperties syncGroupsProperties;
     private final OrderSyncProperties orderSyncProperties;
 
@@ -150,6 +154,32 @@ public class SynDataController {
         long elapsed = System.currentTimeMillis() - start;
         log.info("[API] POST /syn/order-sync 完成: stats={}, 耗时={}ms", result, elapsed);
         return Map.of("message", "医嘱同步完成", "stats", result, "elapsedMs", elapsed);
+    }
+
+    /**
+     * 手动触发源联动同步（全量扫描所有 enabled 规则）。
+     */
+    @PostMapping("/source-sync")
+    public Map<String, Object> sourceSync() {
+        log.info("[API] POST /syn/source-sync - 手动触发源联动同步");
+        long start = System.currentTimeMillis();
+        Map<String, Integer> result = sourceDrivenSyncService.syncAll();
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/source-sync 完成: stats={}, 耗时={}ms", result, elapsed);
+        return Map.of("message", "源联动同步完成", "stats", result, "elapsedMs", elapsed);
+    }
+
+    /**
+     * 手动触发血糖同步（全量扫描 lookback 窗口）。
+     */
+    @PostMapping("/bloodsugar-sync")
+    public Map<String, Object> bloodSugarSync() {
+        log.info("[API] POST /syn/bloodsugar-sync - 手动触发血糖同步");
+        long start = System.currentTimeMillis();
+        Map<String, Integer> result = bloodSugarSyncService.sync();
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/bloodsugar-sync 完成: stats={}, 耗时={}ms", result, elapsed);
+        return Map.of("message", "血糖同步完成", "stats", result, "elapsedMs", elapsed);
     }
 
     /** 调试：查询某在院患者的 bedside 记录。 */

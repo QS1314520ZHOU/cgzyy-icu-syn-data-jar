@@ -61,6 +61,10 @@ public class BedsideSyncLog {
     /** ===== 同步类型常量 ===== */
     public static final String TYPE_PARAM = "PARAM定时";
     public static final String TYPE_ORDER = "ORDER医嘱";
+    /** 源 code 驱动的同时间点跨 code 值联动同步 */
+    public static final String TYPE_SOURCE = "SOURCE联动";
+    /** 血糖同步（bloodSugar 集合驱动 + 小时分桶） */
+    public static final String TYPE_BLOODSUGAR = "血糖同步";
 
     /** ===== 执行结果常量 ===== */
     public static final String RESULT_SUCCESS = "SUCCESS";

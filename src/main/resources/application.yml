@@ -72,6 +72,63 @@ sync:
         - param_穿刺侧肢体远端肢体有无紫绀及肿胀
 
 # ===================================================================
+# 源 code 驱动同时间点跨 code 值联动同步
+# ===================================================================
+source-sync:
+  enabled: true
+  edit-user: 6a1f9f01e467916d244bbdaa
+  timezone: Asia/Shanghai
+  lookback-minutes: 180                    # 只处理过去 3 小时内产生/更新的触发记录
+  time-tolerance-seconds: 0                 # 源记录 time 与触发 time 的匹配容差（0=精确）
+  scan-interval-ms: 300000                  # 定时扫描间隔（5 分钟）
+  rules:
+    # --- 规则1: IABP 反博压触发联动 ---
+    - name: iabp-pressure
+      trigger-code: param_反博压
+      mappings:
+        - target-code: param_iabp心率
+          source-codes:
+            - param_HR
+        - target-code: param_iabp收缩压
+          source-codes:
+            - param_ibp_s        # 有创优先
+            - param_nibp_s
+        - target-code: param_iabp舒张压
+          source-codes:
+            - param_ibp_d
+            - param_nibp_d
+        - target-code: param_iabp平均压
+          source-codes:
+            - param_ibp_m
+            - param_nibp_m
+
+    # --- 规则2: GEDI 触发联动 ---
+    - name: gedi
+      trigger-code: param_GEDI
+      mappings:
+        - target-code: param_CVP
+          source-codes:
+            - param_cvp
+        - target-code: param_HR
+          source-codes:
+            - param_HR
+        - target-code: param_MAP
+          source-codes:
+            - param_ibp_m        # 有创优先
+            - param_nibp_m
+
+# ===================================================================
+# 血糖同步配置（bloodSugar 集合驱动 + 小时分桶取最新 + 整点生成 bedside）
+# ===================================================================
+bloodsugar-sync:
+  enabled: true
+  target-code: param_XueTang
+  edit-user: 6a1f9f01e467916d244bbdaa
+  timezone: Asia/Shanghai
+  lookback-hours: 48                      # 只处理近 48 小时内的血糖数据
+  scan-interval-ms: 300000                # 定时扫描间隔（5 分钟）
+
+# ===================================================================
 # 医嘱驱动 bedside 同步配置（param_biSiLiquid 鼻饲液）
 # ===================================================================
 order-sync:
