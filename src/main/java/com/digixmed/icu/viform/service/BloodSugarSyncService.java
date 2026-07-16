@@ -164,9 +164,11 @@ public class BloodSugarSyncService {
         log.info("[BloodSugarSync] resyncBucket pid={}, bucket=[{}, {}), targetTime={}",
                 pid, bucketStart, bucketEnd, targetTime);
 
-        // 2. 查该患者该桶内 valid=true 明细
-        List<BloodSugar> validInBucket = bloodSugarRepository
-                .findByPidAndValidTrueAndTimeGreaterThanEqualAndTimeLessThan(pid, bucketStart, bucketEnd);
+        // 2. 查该患者该桶内 valid=true 明细（同 key 链式 gte/lt，不冲突）
+        Query bucketQuery = new Query(Criteria.where("pid").is(pid)
+                .and("valid").is(true)
+                .and("time").gte(bucketStart).lt(bucketEnd));
+        List<BloodSugar> validInBucket = smartCareMongoTemplate.find(bucketQuery, BloodSugar.class);
 
         String targetCode = bloodSugarSyncProperties.getTargetCode();
         String editUser = bloodSugarSyncProperties.getEditUser();
