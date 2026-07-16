@@ -11,7 +11,7 @@ import java.util.Optional;
 /**
  * bloodSugar 集合仓库（SmartCare 库）。
  */
-public interface BloodSugarRepository extends MongoRepository<BloodSugar, Long> {
+public interface BloodSugarRepository extends MongoRepository<BloodSugar, String> {
 
     /**
      * 批量按患者 ID 查询有效血糖记录。
@@ -24,7 +24,12 @@ public interface BloodSugarRepository extends MongoRepository<BloodSugar, Long> 
     List<BloodSugar> findByPidInAndValidTrueAndTimeGreaterThanEqual(Collection<String> pids, Date since);
 
     /**
-     * 按患者 ID + 检测时间精确匹配一条血糖记录（用于修改/删除时的幂等查找）。
+     * 按患者 ID + 检测时间查询有效记录（防重复推送）。
      */
-    Optional<BloodSugar> findByPidAndTime(String pid, Date time);
+    Optional<BloodSugar> findFirstByPidAndTimeAndValidTrue(String pid, Date time);
+
+    /**
+     * 按患者 ID + 检测时间查询（含无效，用于逻辑删除等场景）。
+     */
+    Optional<BloodSugar> findFirstByPidAndTime(String pid, Date time);
 }

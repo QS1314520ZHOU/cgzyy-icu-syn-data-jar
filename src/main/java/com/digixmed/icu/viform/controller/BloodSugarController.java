@@ -5,6 +5,7 @@ import com.digixmed.icu.viform.dto.BloodSugarPushDTO;
 import com.digixmed.icu.viform.service.BloodSugarReceiveService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -26,13 +27,19 @@ public class BloodSugarController {
     /**
      * 接收平台方推送的血糖数据。
      *
+     * <p>consumes 兼容 application/json 及各种变体，避免 415。</p>
+     *
      * <pre>
-     * curl -X POST http://&lt;ip&gt;:30001/data/bloodSugar \
+     * curl -X POST http://&lt;ip&gt;:10241/data/bloodSugar \
      *   -H "Content-Type: application/json" \
-     *   -d '{"patId":"...","patName":"...","patNo":"...", ...}'
+     *   -d '{"patId":"...","patNo":"...","bloGluVal":"...", ...}'
      * </pre>
      */
-    @PostMapping("/bloodSugar")
+    @PostMapping(value = "/bloodSugar", consumes = {
+            MediaType.APPLICATION_JSON_VALUE,
+            "application/*+json",
+            MediaType.ALL_VALUE
+    })
     public ApiResult receive(@RequestBody BloodSugarPushDTO dto) {
         log.info("[API] POST /data/bloodSugar - 收到血糖推送 patNo={}, operationType={}",
                 dto != null ? dto.getPatNo() : "null",

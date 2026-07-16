@@ -14,13 +14,13 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.util.Date;
-import java.util.List;
 import java.util.Optional;
 
 /**
  * 血糖数据接收联调服务。
  *
- * <p>处理平台方推送的血糖数据：校验患者 → 分派保存/修改/删除 → 触发下游同步。</p>
+ * <p>处理平台方推送的血糖数据：校验患者 → 防重复查询 → 分派新增/修改/删除 → 触发下游同步。
+ * 严禁 DTO 字段写入 bloodSugar 集合，只用显式映射的固定实体字段。</p>
  */
 @Slf4j
 @Service
@@ -30,14 +30,15 @@ public class BloodSugarReceiveService {
     private final PatientRepository patientRepository;
     private final BloodSugarRepository bloodSugarRepository;
     private final AccountRepository accountRepository;
-    private final SequenceGeneratorService sequenceGeneratorService;
     private final BloodSugarSyncService bloodSugarSyncService;
+
+    /** operationType 常量 */
+    private static final int OP_SAVE = 1;
+    private static final int OP_UPDATE = 2;
+    private static final int OP_DELETE = 3;
 
     /**
      * 处理推送的血糖数据。
-     *
-     * @param dto 血糖推送 DTO
-     * @return ApiResult 处理结果
      */
     public ApiResult process(BloodSugarPushDTO dto) {
         // 1. 必填校验
@@ -49,7 +50,7 @@ public class BloodSugarReceiveService {
             return ApiResult.fail("缺少必填字段: " + missing, ApiResult.PARAM_INVALID);
         }
 
-        // 2. 查患者：根据 patNo → hisPid 匹配
+        // 2. 查患者：patNo → patient.mrn
         Patient patient = patientRepository.findByMrn(dto.getPatNo());
         if (patient == null) {
             log.info("[BloodSugar] 未找到对应患者 patNo={}", dto.getPatNo());
@@ -59,93 +60,47 @@ public class BloodSugarReceiveService {
         log.info("[BloodSugar] 收到推送: patNo={}, patientId={}, name={}, operationType={}",
                 dto.getPatNo(), patient.getId(), patient.getName(), dto.getOperationType());
 
-        // 3. 根据操作类型分派
+        // 3. 防重复：按 (pid + time) 查 valid=true 的已有记录
+        Optional<BloodSugar> existingOpt = bloodSugarRepository
+                .findFirstByPidAndTimeAndValidTrue(patient.getId(), dto.getBloGluDateTime());
+        boolean exists = existingOpt.isPresent();
+        BloodSugar existing = existingOpt.orElse(null);
+
         int opType = dto.getOperationType();
-        switch (opType) {
-            case 1:
-                return doSave(dto, patient);
-            case 2:
-                return doUpdate(dto, patient);
-            case 3:
-                return doDelete(dto, patient);
-            default:
-                log.warn("[BloodSugar] 未知操作类型 operationType={}", opType);
-                return ApiResult.fail("未知操作类型: " + opType, ApiResult.UNKNOWN_OPERATION_TYPE);
+
+        // 4. 防重复矩阵分派
+        if (opType == OP_SAVE) {
+            if (exists) {
+                return doUpdate(existing, dto, patient, "保存→已有记录，更新");
+            } else {
+                return doInsert(dto, patient);
+            }
+        } else if (opType == OP_UPDATE) {
+            if (exists) {
+                return doUpdate(existing, dto, patient, "修改→更新已有记录");
+            } else {
+                return doInsert(dto, patient);
+            }
+        } else if (opType == OP_DELETE) {
+            if (exists) {
+                return doDelete(existing, dto, patient);
+            } else {
+                log.info("[BloodSugar] 删除：无对应记录 pid={}, time={}, 静默跳过",
+                        patient.getId(), dto.getBloGluDateTime());
+                return ApiResult.success("无对应记录，跳过删除");
+            }
+        } else {
+            log.warn("[BloodSugar] 未知操作类型 operationType={}", opType);
+            return ApiResult.fail("未知操作类型: " + opType, ApiResult.UNKNOWN_OPERATION_TYPE);
         }
     }
 
-    // ==================== 操作分派 ====================
+    // ==================== 操作实现 ====================
 
-    /**
-     * 新增：自增主键 + 落库 + 触发同步。
-     */
-    private ApiResult doSave(BloodSugarPushDTO dto, Patient patient) {
-        BloodSugar bs = buildBloodSugar(dto, patient);
-        bs.setId(sequenceGeneratorService.nextSeq("bloodSugar"));
-        bloodSugarRepository.save(bs);
-        log.info("[BloodSugar] 保存成功 id={}, pid={}, patNo={}, result={}",
-                bs.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
-
-        triggerSync();
-        return ApiResult.success("血糖保存成功");
-    }
-
-    /**
-     * 修改：按 (pid + time) 查已有记录，存在则更新字段 + 触发同步。
-     */
-    private ApiResult doUpdate(BloodSugarPushDTO dto, Patient patient) {
-        Optional<BloodSugar> existing = bloodSugarRepository
-                .findByPidAndTime(patient.getId(), dto.getBloGluDateTime());
-        if (!existing.isPresent()) {
-            log.info("[BloodSugar] 修改：未找到对应记录 pid={}, time={}, 静默跳过",
-                    patient.getId(), dto.getBloGluDateTime());
-            return ApiResult.success("无对应记录，跳过修改");
-        }
-
-        BloodSugar bs = existing.get();
-        bs.setResult(dto.getBloGluVal());
-        bs.setDetectionProject(dto.getTimePeriod());
-        bs.setExaminer(dto.getOperatNurse());
-        bs.setExaminerId(resolveExaminerId(dto.getOperatNurse()));
-        bs.setRemarks(dto.getBloGluNote());
-        bs.setSpecimenSource(""); // 平台未提供标本来源
-        bloodSugarRepository.save(bs);
-        log.info("[BloodSugar] 修改成功 id={}, pid={}, patNo={}, result={}",
-                bs.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
-
-        triggerSync();
-        return ApiResult.success("血糖修改成功");
-    }
-
-    /**
-     * 删除（逻辑删除）：valid = false + 触发同步。
-     */
-    private ApiResult doDelete(BloodSugarPushDTO dto, Patient patient) {
-        Optional<BloodSugar> existing = bloodSugarRepository
-                .findByPidAndTime(patient.getId(), dto.getBloGluDateTime());
-        if (!existing.isPresent()) {
-            log.info("[BloodSugar] 删除：未找到对应记录 pid={}, time={}, 静默跳过",
-                    patient.getId(), dto.getBloGluDateTime());
-            return ApiResult.success("无对应记录，跳过删除");
-        }
-
-        BloodSugar bs = existing.get();
-        bs.setValid(false);
-        bloodSugarRepository.save(bs);
-        log.info("[BloodSugar] 逻辑删除成功 id={}, pid={}, patNo={}",
-                bs.getId(), patient.getId(), dto.getPatNo());
-
-        triggerSync();
-        return ApiResult.success("血糖删除成功");
-    }
-
-    // ==================== 内部工具方法 ====================
-
-    /**
-     * 将 DTO 映射为 BloodSugar 实体（不含主键）。
-     */
-    private BloodSugar buildBloodSugar(BloodSugarPushDTO dto, Patient patient) {
+    /** 新增一条 bloodSugar（显式字段映射）。 */
+    private ApiResult doInsert(BloodSugarPushDTO dto, Patient patient) {
         BloodSugar bs = new BloodSugar();
+        // 只映射固定的 10 个实体字段，禁止 DTO 整体拷贝
         bs.setPid(patient.getId());
         bs.setTime(dto.getBloGluDateTime());
         bs.setResult(dto.getBloGluVal());
@@ -153,48 +108,67 @@ public class BloodSugarReceiveService {
         bs.setExaminer(dto.getOperatNurse());
         bs.setExaminerId(resolveExaminerId(dto.getOperatNurse()));
         bs.setValid(true);
-        bs.setSpecimenSource("");
+        bs.setSpecimenSource("");   // TODO：确认业务默认值
+        bs.setDeviceCode("");       // TODO：确认业务默认值
         bs.setRemarks(dto.getBloGluNote());
-        // 扩展字段（TODO: 确认 bloodSugar 实体是否已有下列字段，如无则需补充实体）
-        bs.setBloGluNum(dto.getBloGluNum());
-        bs.setTimePeriod(dto.getTimePeriod());
-        bs.setTimePeriodType(dto.getTimePeriodType());
-        bs.setPatName(dto.getPatName());
-        bs.setPatNo(dto.getPatNo());
-        bs.setHosInDate(dto.getHosInDate());
-        bs.setWardCode(dto.getWardCode());
-        bs.setWardName(dto.getWardName());
-        bs.setPatBedNo(dto.getPatBedNo());
-        bs.setOrgId(dto.getOrgId());
-        return bs;
+        bloodSugarRepository.save(bs);
+        log.info("[BloodSugar] 新增成功 id={}, pid={}, patNo={}, result={}",
+                bs.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
+        triggerSync();
+        return ApiResult.success("血糖保存成功");
     }
+
+    /** 更新已有记录（显式字段映射）。 */
+    private ApiResult doUpdate(BloodSugar existing, BloodSugarPushDTO dto, Patient patient, String reason) {
+        existing.setResult(dto.getBloGluVal());
+        existing.setDetectionProject(dto.getTimePeriod());
+        existing.setExaminer(dto.getOperatNurse());
+        existing.setExaminerId(resolveExaminerId(dto.getOperatNurse()));
+        existing.setSpecimenSource("");   // TODO：确认业务默认值
+        existing.setDeviceCode("");       // TODO：确认业务默认值
+        existing.setRemarks(dto.getBloGluNote());
+        existing.setValid(true);
+        bloodSugarRepository.save(existing);
+        log.info("[BloodSugar] 更新成功({}) id={}, pid={}, patNo={}, result={}",
+                reason, existing.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
+        triggerSync();
+        return ApiResult.success("血糖修改成功");
+    }
+
+    /** 逻辑删除：valid = false。 */
+    private ApiResult doDelete(BloodSugar existing, BloodSugarPushDTO dto, Patient patient) {
+        existing.setValid(false);
+        bloodSugarRepository.save(existing);
+        log.info("[BloodSugar] 逻辑删除成功 id={}, pid={}, patNo={}",
+                existing.getId(), patient.getId(), dto.getPatNo());
+        triggerSync();
+        return ApiResult.success("血糖删除成功");
+    }
+
+    // ==================== 内部工具 ====================
 
     /**
      * 根据护士姓名从 account 集合匹配 examinerId。
      *
-     * <p>重名时取第一条，匹配不到返回 null 并记日志。</p>
+     * <p>优先按 trueName + "Nurse" 精确匹配；无则降级仅按 trueName 匹配；
+     * 重名取第一条；匹配不到返回 null 记日志，不阻断。</p>
      */
     private String resolveExaminerId(String nurseName) {
-        if (!StringUtils.hasText(nurseName)) {
-            return null;
+        if (!StringUtils.hasText(nurseName)) return null;
+        Optional<Account> acc = accountRepository.findFirstByTrueNameAndProfession(nurseName, "Nurse");
+        if (acc.isPresent()) {
+            return acc.get().getId();
         }
-        List<Account> accounts = accountRepository.findByName(nurseName);
-        if (accounts.isEmpty()) {
-            log.info("[BloodSugar] 未匹配到 examinerId: nurseName={}", nurseName);
-            return null;
+        acc = accountRepository.findFirstByTrueName(nurseName);
+        if (acc.isPresent()) {
+            log.info("[BloodSugar] 护士匹配(不限职业): nurseName={}, accountId={}", nurseName, acc.get().getId());
+            return acc.get().getId();
         }
-        if (accounts.size() > 1) {
-            log.info("[BloodSugar] 护士重名(取第一条): nurseName={}, 匹配到{}个",
-                    nurseName, accounts.size());
-        }
-        return accounts.get(0).getId();
+        log.info("[BloodSugar] 未匹配到 examinerId: nurseName={}", nurseName);
+        return null;
     }
 
-    /**
-     * 必填字段校验。
-     *
-     * @return 缺失的字段名，全部齐全返回 null
-     */
+    /** 必填字段校验。 */
     private String validateRequired(BloodSugarPushDTO dto) {
         if (!StringUtils.hasText(dto.getPatId())) return "patId";
         if (!StringUtils.hasText(dto.getPatName())) return "patName";
@@ -214,18 +188,13 @@ public class BloodSugarReceiveService {
         return null;
     }
 
-    /**
-     * 触发既有血糖同步逻辑。
-     *
-     * <p>调用 {@link BloodSugarSyncService#sync()} 全量扫描同步。
-     * 如需按患者/单条优化，可后续扩展方法签名。</p>
-     */
+    /** 触发既有血糖同步逻辑（全量扫描）。 */
     private void triggerSync() {
         try {
             java.util.Map<String, Integer> stats = bloodSugarSyncService.sync();
             log.info("[BloodSugar] 同步触发完成: {}", stats);
         } catch (Exception e) {
-            log.error("[BloodSugar] 同步触发异常，不影响主流程", e);
+            log.error("[BloodSugar] 同步触发异常（不影响主流程）", e);
         }
     }
 }
