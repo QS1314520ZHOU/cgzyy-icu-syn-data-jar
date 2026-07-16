@@ -32,4 +32,10 @@ public interface BloodSugarRepository extends MongoRepository<BloodSugar, String
      * 按患者 ID + 检测时间查询（含无效，用于逻辑删除等场景）。
      */
     Optional<BloodSugar> findFirstByPidAndTime(String pid, Date time);
+
+    /**
+     * 按患者 ID + 有效 + 时间窗口 [start, end) 查询（桶内定向重算用）。
+     */
+    List<BloodSugar> findByPidAndValidTrueAndTimeGreaterThanEqualAndTimeLessThan(
+            String pid, Date start, Date end);
 }

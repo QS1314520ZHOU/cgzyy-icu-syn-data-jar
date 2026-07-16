@@ -48,7 +48,9 @@ public class BloodSugarSyncService {
     private static final String STATUS_ADMITTED = "admitted";
 
     /** Asia/Shanghai 时区 */
-    private static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+    static final ZoneId ZONE = ZoneId.of("Asia/Shanghai");
+
+    // ==================== 全量同步 ====================
 
     /**
      * 执行一次血糖同步（全量扫描 lookback 窗口内数据）。
@@ -60,13 +62,11 @@ public class BloodSugarSyncService {
 
         int total = 0, success = 0, skip = 0, fail = 0;
 
-        // 检查是否启用
         if (!bloodSugarSyncProperties.isEnabled()) {
             log.info("[BloodSugarSync] 已禁用 (enabled=false)，跳过");
             return Map.of("total", 0, "success", 0, "skip", 0, "fail", 0);
         }
 
-        // 1. 查在院患者
         List<Patient> patients = patientRepository.findByStatus(STATUS_ADMITTED);
         if (CollectionUtils.isEmpty(patients)) {
             log.info("[BloodSugarSync] 无在院患者，跳过");
@@ -83,15 +83,11 @@ public class BloodSugarSyncService {
             return Map.of("total", 0, "success", 0, "skip", 0, "fail", 0);
         }
 
-        // 构建 pid → Patient 映射
         Map<String, Patient> patientMap = new HashMap<>();
         for (Patient p : patients) {
-            if (StringUtils.hasText(p.getId())) {
-                patientMap.put(p.getId(), p);
-            }
+            if (StringUtils.hasText(p.getId())) patientMap.put(p.getId(), p);
         }
 
-        // 2. 查 bloodSugar（lookback 窗口 + valid=true）
         Date now = new Date();
         int lookbackHours = bloodSugarSyncProperties.getLookbackHours();
         Date windowStart = new Date(now.getTime() - lookbackHours * 3600_000L);
@@ -106,11 +102,6 @@ public class BloodSugarSyncService {
             return Map.of("total", 0, "success", 0, "skip", 0, "fail", 0);
         }
 
-        // 3. 按 pid → 小时桶分组，每桶取最新
-        String targetCode = bloodSugarSyncProperties.getTargetCode();
-        String editUser = bloodSugarSyncProperties.getEditUser();
-
-        // 按 pid 分组
         Map<String, List<BloodSugar>> byPid = new HashMap<>();
         for (BloodSugar bs : bloodSugars) {
             if (!StringUtils.hasText(bs.getPid())) continue;
@@ -122,82 +113,19 @@ public class BloodSugarSyncService {
             Patient patient = patientMap.get(pid);
             if (patient == null) continue;
 
-            // 3a. 按 Asia/Shanghai 小时桶分组，每桶取最新一条
             Map<LocalDateTime, BloodSugar> bucketBest = selectBestPerHour(entry.getValue());
 
-            // 3b. 每条最佳记录生成 bedside
             for (Map.Entry<LocalDateTime, BloodSugar> bucket : bucketBest.entrySet()) {
-                LocalDateTime bucketStartLocal = bucket.getKey();
-                BloodSugar source = bucket.getValue();
                 total++;
-
                 try {
-                    // 计算 targetTime：上海整点 → UTC Date
-                    ZonedDateTime targetShanghai = bucketStartLocal.atZone(ZONE);
-                    Date targetTime = Date.from(targetShanghai.toInstant());
-
-                    // 读目标 bedside 现值（变动跟随）
-                    Query targetQuery = new Query(Criteria.where("pid").is(pid)
-                            .and("code").is(targetCode)
-                            .and("time").is(targetTime));
-                    Bedside currentTarget = smartCareMongoTemplate.findOne(targetQuery, Bedside.class);
-
-                    String sourceStrVal = source.getResult();
-                    String sourceFVal = source.getResult();
-
-                    // 比较现值与期望源值
-                    if (currentTarget != null
-                            && Objects.equals(currentTarget.getStrVal(), sourceStrVal)
-                            && Objects.equals(currentTarget.getFVal(), sourceFVal)) {
-                        log.debug("[BloodSugarSync] pid={}, targetTime={}: 现值相同 SKIP",
-                                pid, targetTime);
-                        skip++;
-                        continue;
-                    }
-
-                    // Upsert bedside 记录
-                    BedsideHistory syncHistory = new BedsideHistory();
-                    syncHistory.setTime(new Date());
-                    syncHistory.setAccountId(editUser);
-                    syncHistory.setDesc("系统血糖同步-sourceId=" + source.getId());
-
-                    String synRemark = String.format("血糖同步 | detectionProject=%s | specimenSource=%s",
-                            source.getDetectionProject() != null ? source.getDetectionProject() : "",
-                            source.getSpecimenSource() != null ? source.getSpecimenSource() : "");
-
-                    Update update = new Update()
-                            .set("strVal", sourceStrVal)
-                            .set("fVal", sourceFVal)
-                            .set("valid", true)
-                            .set("synRemark", synRemark)                    // 血糖同步说明(程序固定)
-                            .set("editUser", editUser)                      // 程序固定
-                            .set("editTime", new Date())                    // 同步元数据
-                            .set("history", Collections.singletonList(syncHistory))
-                            .setOnInsert("_class", Bedside.BEDSIDE_CLASS);
-                    // 注意：不写 remark，避免覆盖目标 bedside 已有业务 remark
-
-                    smartCareMongoTemplate.upsert(targetQuery, update, Bedside.class);
-
-                    Bedside upserted = smartCareMongoTemplate.findOne(targetQuery, Bedside.class);
-                    String generatedId = upserted != null ? upserted.getId() : null;
-
-                    // 写同步日志（sourceKey=null 避免 sparse unique 冲突，允许变动重写）
-                    BedsideSyncLog syncLog = buildLog(BedsideSyncLog.TYPE_BLOODSUGAR,
-                            targetCode, patient, null, targetTime, generatedId,
-                            BedsideSyncLog.RESULT_SUCCESS,
-                            String.format("bloodSugarId=%s, sourceTime=%s, result=%s, bucket=%s",
-                                    source.getId(), source.getTime(), source.getResult(),
-                                    bucketStartLocal));
-                    syncLogRepository.save(syncLog);
-
-                    log.info("[BloodSugarSync] ✓ pid={}, bucket={}, targetTime={}, result={}, bedsideId={}",
-                            pid, bucketStartLocal, targetTime, source.getResult(), generatedId);
-                    success++;
-
+                    boolean ok = upsertBedsideForBucket(patient, pid, bucket.getKey(), bucket.getValue());
+                    if (ok) success++; else skip++;
                 } catch (Exception e) {
                     log.error("[BloodSugarSync] 异常 pid={}, bloodSugarId={}, bucket={}",
-                            pid, source.getId(), bucketStartLocal, e);
-                    saveFailLog(patient, targetCode, e.getMessage(), source);
+                            pid, bucket.getValue().getId(), bucket.getKey(), e);
+                    Patient p = patientMap.get(pid);
+                    if (p != null) saveFailLog(p, bloodSugarSyncProperties.getTargetCode(),
+                            e.getMessage(), bucket.getValue());
                     fail++;
                 }
             }
@@ -208,26 +136,189 @@ public class BloodSugarSyncService {
         return Map.of("total", total, "success", success, "skip", skip, "fail", fail);
     }
 
-    // ==================== 小时分桶取最新 ====================
+    // ==================== 定向桶重算（供接收接口调用） ====================
 
     /**
-     * 将同一患者的 bloodSugar 记录按 Asia/Shanghai 小时分桶，每桶取最新一条。
+     * 对受影响的整点小时桶做定向重算，保证 bloodSugar 明细与 bedside 一致。
      *
-     * <p>排序规则：time 降序 → _id 降序（ObjectId 单调递增保证写入顺序）。</p>
+     * <p>接收接口写库成功后调用此方法，替代全量 sync()。
+     * 桶内仍有 valid=true 明细 → upsert 最新一条；
+     * 桶内已无 valid=true 明细 → 逻辑删除对应 bedside（仅限血糖同步来源）。</p>
      *
-     * @param records 该患者的 bloodSugar 列表
-     * @return 桶起始时间 (Asia/Shanghai LocalDateTime) → 该桶最新记录
+     * @param pid       患者 ID
+     * @param sourceTime bloodSugar.time（UTC），用于定位整点小时桶
      */
+    public void resyncBucket(String pid, Date sourceTime) {
+        if (sourceTime == null || !StringUtils.hasText(pid)) {
+            log.warn("[BloodSugarSync] resyncBucket 参数无效 pid={}, sourceTime={}", pid, sourceTime);
+            return;
+        }
+
+        // 1. 计算桶边界（与 sync() 完全一致的算法）
+        LocalDateTime bucketStartLocal = sourceTime.toInstant().atZone(ZONE)
+                .truncatedTo(ChronoUnit.HOURS).toLocalDateTime();
+        Date targetTime = Date.from(bucketStartLocal.atZone(ZONE).toInstant());
+        Date bucketStart = targetTime;  // 桶起点(UTC)
+        Date bucketEnd = Date.from(bucketStartLocal.plusHours(1).atZone(ZONE).toInstant()); // 桶终点(不含)
+
+        log.info("[BloodSugarSync] resyncBucket pid={}, bucket=[{}, {}), targetTime={}",
+                pid, bucketStart, bucketEnd, targetTime);
+
+        // 2. 查该患者该桶内 valid=true 明细
+        List<BloodSugar> validInBucket = bloodSugarRepository
+                .findByPidAndValidTrueAndTimeGreaterThanEqualAndTimeLessThan(pid, bucketStart, bucketEnd);
+
+        String targetCode = bloodSugarSyncProperties.getTargetCode();
+        String editUser = bloodSugarSyncProperties.getEditUser();
+
+        // 3. 查找患者（用于日志）
+        Patient patient = patientRepository.findById(pid).orElse(null);
+
+        if (!CollectionUtils.isEmpty(validInBucket)) {
+            // 3a. 桶内有数据 → 取最新一条 upsert
+            BloodSugar best = validInBucket.stream()
+                    .max(this::compareBest).orElse(null);
+            if (best != null) {
+                try {
+                    upsertBedsideForBucket(patient, pid, bucketStartLocal, best);
+                    log.info("[BloodSugarSync] resyncBucket 拿其它值: pid={}, bucket={}, result={}",
+                            pid, bucketStartLocal, best.getResult());
+                } catch (Exception e) {
+                    log.error("[BloodSugarSync] resyncBucket upsert异常 pid={}, bucket={}", pid, bucketStartLocal, e);
+                    if (patient != null) saveFailLog(patient, targetCode, e.getMessage(), best);
+                }
+            }
+        } else {
+            // 3b. 桶内无数据 → 检查是否需要逻辑删除 bedside
+            Query targetQuery = new Query(Criteria.where("pid").is(pid)
+                    .and("code").is(targetCode)
+                    .and("time").is(targetTime));
+            Bedside currentBedside = smartCareMongoTemplate.findOne(targetQuery, Bedside.class);
+
+            if (currentBedside == null) {
+                log.info("[BloodSugarSync] resyncBucket 空桶无bedside: pid={}, targetTime={}", pid, targetTime);
+                return;
+            }
+
+            // 安全校验：只删除血糖同步来源的 bedside
+            boolean isBloodSugarSource = (currentBedside.getSynRemark() != null
+                    && currentBedside.getSynRemark().startsWith("血糖同步"))
+                    || (editUser.equals(currentBedside.getEditUser()));
+            if (!isBloodSugarSource) {
+                log.info("[BloodSugarSync] resyncBucket 空桶但bedside非血糖来源，不动: pid={}, targetTime={}, synRemark={}, editUser={}",
+                        pid, targetTime, currentBedside.getSynRemark(), currentBedside.getEditUser());
+                return;
+            }
+
+            // 逻辑删除
+            BedsideHistory delHistory = new BedsideHistory();
+            delHistory.setTime(new Date());
+            delHistory.setAccountId(editUser);
+            delHistory.setDesc("血糖同步删除-sourceTime=" + sourceTime);
+
+            Update delUpdate = new Update()
+                    .set("valid", false)
+                    .set("editUser", editUser)
+                    .set("editTime", new Date())
+                    .set("synRemark", "血糖同步-源已删除")
+                    .push("history", delHistory);
+
+            smartCareMongoTemplate.updateFirst(targetQuery, delUpdate, Bedside.class);
+
+            // 写同步日志
+            BedsideSyncLog syncLog = buildLog(BedsideSyncLog.TYPE_BLOODSUGAR, targetCode, patient,
+                    null, targetTime, currentBedside.getId(),
+                    BedsideSyncLog.RESULT_SUCCESS,
+                    "源删除→bedside失效, targetTime=" + targetTime);
+            syncLogRepository.save(syncLog);
+
+            log.info("[BloodSugarSync] resyncBucket 跟随删除: pid={}, targetTime={}, bedsideId={}",
+                    pid, targetTime, currentBedside.getId());
+        }
+    }
+
+    // ==================== 单桶 upsert（抽取复用） ====================
+
+    /**
+     * 对单个小时桶执行 bedside upsert（变动跟随）。
+     *
+     * <p>由 sync() 和 resyncBucket() 共用，保证行为完全一致。</p>
+     *
+     * @param patient         患者（可 null，仅用于日志）
+     * @param pid             患者 ID
+     * @param bucketStartLocal Shanghai 时区的桶起始时间
+     * @param source          该桶内选出的最佳 bloodSugar
+     * @return true=upsert成功, false=现值相同SKIP
+     */
+    private boolean upsertBedsideForBucket(Patient patient, String pid,
+                                           LocalDateTime bucketStartLocal, BloodSugar source) {
+        String targetCode = bloodSugarSyncProperties.getTargetCode();
+        String editUser = bloodSugarSyncProperties.getEditUser();
+
+        // 计算 targetTime（与 sync/resyncBucket 一致）
+        Date targetTime = Date.from(bucketStartLocal.atZone(ZONE).toInstant());
+
+        Query targetQuery = new Query(Criteria.where("pid").is(pid)
+                .and("code").is(targetCode)
+                .and("time").is(targetTime));
+        Bedside currentTarget = smartCareMongoTemplate.findOne(targetQuery, Bedside.class);
+
+        String sourceStrVal = source.getResult();
+        String sourceFVal = source.getResult();
+
+        // 变动跟随：比较现值
+        if (currentTarget != null
+                && Objects.equals(currentTarget.getStrVal(), sourceStrVal)
+                && Objects.equals(currentTarget.getFVal(), sourceFVal)) {
+            log.debug("[BloodSugarSync] pid={}, targetTime={}: 现值相同 SKIP", pid, targetTime);
+            return false;
+        }
+
+        // Upsert
+        BedsideHistory syncHistory = new BedsideHistory();
+        syncHistory.setTime(new Date());
+        syncHistory.setAccountId(editUser);
+        syncHistory.setDesc("系统血糖同步-sourceId=" + source.getId());
+
+        String synRemark = String.format("血糖同步 | detectionProject=%s | specimenSource=%s",
+                source.getDetectionProject() != null ? source.getDetectionProject() : "",
+                source.getSpecimenSource() != null ? source.getSpecimenSource() : "");
+
+        Update update = new Update()
+                .set("strVal", sourceStrVal)
+                .set("fVal", sourceFVal)
+                .set("valid", true)
+                .set("synRemark", synRemark)
+                .set("editUser", editUser)
+                .set("editTime", new Date())
+                .set("history", Collections.singletonList(syncHistory))
+                .setOnInsert("_class", Bedside.BEDSIDE_CLASS);
+
+        smartCareMongoTemplate.upsert(targetQuery, update, Bedside.class);
+
+        Bedside upserted = smartCareMongoTemplate.findOne(targetQuery, Bedside.class);
+        String generatedId = upserted != null ? upserted.getId() : null;
+
+        // 写同步日志
+        BedsideSyncLog syncLog = buildLog(BedsideSyncLog.TYPE_BLOODSUGAR, targetCode, patient,
+                null, targetTime, generatedId, BedsideSyncLog.RESULT_SUCCESS,
+                String.format("bloodSugarId=%s, sourceTime=%s, result=%s, bucket=%s",
+                        source.getId(), source.getTime(), source.getResult(), bucketStartLocal));
+        syncLogRepository.save(syncLog);
+
+        log.info("[BloodSugarSync] ✓ pid={}, bucket={}, targetTime={}, result={}, bedsideId={}",
+                pid, bucketStartLocal, targetTime, source.getResult(), generatedId);
+        return true;
+    }
+
+    // ==================== 小时分桶取最新 ====================
+
     private Map<LocalDateTime, BloodSugar> selectBestPerHour(List<BloodSugar> records) {
         Map<LocalDateTime, BloodSugar> best = new LinkedHashMap<>();
-
         for (BloodSugar bs : records) {
             if (bs.getTime() == null) continue;
-
-            // bloodSugar.time 是 UTC → 转 Asia/Shanghai → 截断到整点
             ZonedDateTime shanghaiTime = bs.getTime().toInstant().atZone(ZONE);
             LocalDateTime bucketKey = shanghaiTime.truncatedTo(ChronoUnit.HOURS).toLocalDateTime();
-
             BloodSugar existing = best.get(bucketKey);
             if (existing == null) {
                 best.put(bucketKey, bs);
@@ -238,23 +329,21 @@ public class BloodSugarSyncService {
         return best;
     }
 
-    /**
-     * 判断 a 是否比 b 更新：先比 time 降序，time 相同则 _id 降序。
-     */
-    private boolean isNewer(BloodSugar a, BloodSugar b) {
+    /** 比较方法（同时用于 Comparator），返回负数表示 a 更新。 */
+    private int compareBest(BloodSugar a, BloodSugar b) {
         if (a.getTime() == null || b.getTime() == null) {
-            return a.getTime() != null;
+            return a.getTime() != null ? 1 : -1;
         }
         int cmp = a.getTime().compareTo(b.getTime());
-        if (cmp != 0) return cmp > 0;
-
-        // time 相同：比 _id（ObjectId 字符串单调递增）
+        if (cmp != 0) return cmp;
         String idA = a.getId();
         String idB = b.getId();
-        if (idA != null && idB != null) {
-            return idA.compareTo(idB) > 0;
-        }
-        return idA != null; // 有 id 的优先
+        if (idA != null && idB != null) return idA.compareTo(idB);
+        return idA != null ? 1 : -1;
+    }
+
+    private boolean isNewer(BloodSugar a, BloodSugar b) {
+        return compareBest(a, b) > 0;
     }
 
     // ==================== 日志工具方法 ====================
@@ -263,8 +352,8 @@ public class BloodSugarSyncService {
         BedsideSyncLog log = new BedsideSyncLog();
         log.setSyncType(BedsideSyncLog.TYPE_BLOODSUGAR);
         log.setCode(code);
-        log.setPid(patient.getId());
-        log.setMrn(patient.getMrn());
+        log.setPid(patient != null ? patient.getId() : null);
+        log.setMrn(patient != null ? patient.getMrn() : null);
         log.setSourceKey(null);
         log.setTargetTimePoint(source.getTime());
         log.setResult(BedsideSyncLog.RESULT_FAIL);
@@ -280,8 +369,8 @@ public class BloodSugarSyncService {
         BedsideSyncLog log = new BedsideSyncLog();
         log.setSyncType(syncType);
         log.setCode(code);
-        log.setPid(patient.getId());
-        log.setMrn(patient.getMrn());
+        log.setPid(patient != null ? patient.getId() : null);
+        log.setMrn(patient != null ? patient.getMrn() : null);
         log.setSourceKey(sourceKey);
         log.setTargetTimePoint(targetTimePoint);
         log.setGeneratedBedsideId(generatedBedsideId);

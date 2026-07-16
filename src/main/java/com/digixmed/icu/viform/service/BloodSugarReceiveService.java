@@ -114,7 +114,7 @@ public class BloodSugarReceiveService {
         bloodSugarRepository.save(bs);
         log.info("[BloodSugar] 新增成功 id={}, pid={}, patNo={}, result={}",
                 bs.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
-        triggerSync();
+        triggerSync(patient.getId(), dto.getBloGluDateTime());
         return ApiResult.success("血糖保存成功");
     }
 
@@ -131,7 +131,7 @@ public class BloodSugarReceiveService {
         bloodSugarRepository.save(existing);
         log.info("[BloodSugar] 更新成功({}) id={}, pid={}, patNo={}, result={}",
                 reason, existing.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
-        triggerSync();
+        triggerSync(patient.getId(), dto.getBloGluDateTime());
         return ApiResult.success("血糖修改成功");
     }
 
@@ -141,7 +141,7 @@ public class BloodSugarReceiveService {
         bloodSugarRepository.save(existing);
         log.info("[BloodSugar] 逻辑删除成功 id={}, pid={}, patNo={}",
                 existing.getId(), patient.getId(), dto.getPatNo());
-        triggerSync();
+        triggerSync(patient.getId(), dto.getBloGluDateTime());
         return ApiResult.success("血糖删除成功");
     }
 
@@ -188,13 +188,13 @@ public class BloodSugarReceiveService {
         return null;
     }
 
-    /** 触发既有血糖同步逻辑（全量扫描）。 */
-    private void triggerSync() {
+    /** 定向桶重算：仅对受影响的整点小时桶做同步（替代全量 sync）。 */
+    private void triggerSync(String pid, Date sourceTime) {
         try {
-            java.util.Map<String, Integer> stats = bloodSugarSyncService.sync();
-            log.info("[BloodSugar] 同步触发完成: {}", stats);
+            bloodSugarSyncService.resyncBucket(pid, sourceTime);
+            log.info("[BloodSugar] 桶重算完成 pid={}, sourceTime={}", pid, sourceTime);
         } catch (Exception e) {
-            log.error("[BloodSugar] 同步触发异常（不影响主流程）", e);
+            log.error("[BloodSugar] 桶重算异常（不影响主流程）pid={}, sourceTime={}", pid, sourceTime, e);
         }
     }
 }
