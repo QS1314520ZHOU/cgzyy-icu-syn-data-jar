@@ -248,9 +248,9 @@ public class BloodSugarSyncService {
         int cmp = a.getTime().compareTo(b.getTime());
         if (cmp != 0) return cmp > 0;
 
-        // time 相同：比 _id（ObjectId 字符串单调递增）
-        String idA = a.getId();
-        String idB = b.getId();
+        // time 相同：比 _id（Long 自增单调递增）
+        Long idA = a.getId();
+        Long idB = b.getId();
         if (idA != null && idB != null) {
             return idA.compareTo(idB) > 0;
         }

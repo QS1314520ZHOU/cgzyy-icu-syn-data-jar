@@ -14,4 +14,8 @@ public interface PatientRepository extends MongoRepository<Patient, String> {
      * 按状态查询患者，例如 status = "admitted"（在院）。
      */
     List<Patient> findByStatus(String status);
+    /**
+     * 按 MRN（病历号）查询患者（patNo → mrn 匹配）。
+     */
+    Patient findByMrn(String mrn);
 }
