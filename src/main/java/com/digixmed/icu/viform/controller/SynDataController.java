@@ -4,7 +4,6 @@ import com.digixmed.icu.viform.config.OrderSyncProperties;
 import com.digixmed.icu.viform.config.SyncGroupsProperties;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.service.AdmittedPatientBedsideService;
-import com.digixmed.icu.viform.service.BloodSugarSyncService;
 import com.digixmed.icu.viform.service.OrderSyncService;
 import com.digixmed.icu.viform.service.ParamTimedSyncService;
 import com.digixmed.icu.viform.service.SourceDrivenSyncService;
@@ -36,7 +35,6 @@ public class SynDataController {
     private final ParamTimedSyncService paramTimedSyncService;
     private final OrderSyncService orderSyncService;
     private final SourceDrivenSyncService sourceDrivenSyncService;
-    private final BloodSugarSyncService bloodSugarSyncService;
     private final SyncGroupsProperties syncGroupsProperties;
     private final OrderSyncProperties orderSyncProperties;
 
@@ -170,16 +168,16 @@ public class SynDataController {
     }
 
     /**
-     * 手动触发血糖同步（全量扫描 lookback 窗口）。
+     * 血糖→bedside 同步已停用。
+     *
+     * @deprecated 该接口不再执行任何写入操作，始终返回停用提示。
      */
+    @Deprecated
     @PostMapping("/bloodsugar-sync")
     public Map<String, Object> bloodSugarSync() {
-        log.info("[API] POST /syn/bloodsugar-sync - 手动触发血糖同步");
-        long start = System.currentTimeMillis();
-        Map<String, Integer> result = bloodSugarSyncService.sync();
-        long elapsed = System.currentTimeMillis() - start;
-        log.info("[API] POST /syn/bloodsugar-sync 完成: stats={}, 耗时={}ms", result, elapsed);
-        return Map.of("message", "血糖同步完成", "stats", result, "elapsedMs", elapsed);
+        log.info("[API] POST /syn/bloodsugar-sync - 血糖同步已停用");
+        return Map.of("message", "血糖到bedside同步已停用", "stats",
+                Map.of("total", 0, "success", 0, "skip", 0, "fail", 0));
     }
 
     /** 调试：查询某在院患者的 bedside 记录。 */

@@ -121,7 +121,7 @@ source-sync:
 # 血糖同步配置（bloodSugar 集合驱动 + 小时分桶取最新 + 整点生成 bedside）
 # ===================================================================
 bloodsugar-sync:
-  enabled: true
+  enabled: false
   target-code: param_XueTang
   edit-user: 6a1f9f01e467916d244bbdaa
   timezone: Asia/Shanghai

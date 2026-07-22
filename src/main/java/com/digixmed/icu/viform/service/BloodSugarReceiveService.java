@@ -13,14 +13,14 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.util.Date;
 import java.util.Optional;
 
 /**
  * 血糖数据接收联调服务。
  *
- * <p>处理平台方推送的血糖数据：校验患者 → 防重复查询 → 分派新增/修改/删除 → 触发下游同步。
- * 严禁 DTO 字段写入 bloodSugar 集合，只用显式映射的固定实体字段。</p>
+ * <p>处理平台方推送的血糖数据：校验患者 → 防重复查询 → 分派新增/修改/删除。
+ * 严禁 DTO 字段写入 bloodSugar 集合，只用显式映射的固定实体字段。
+ * （血糖→bedside 同步已停用，本服务不再触发下游同步）</p>
  */
 @Slf4j
 @Service
@@ -30,7 +30,6 @@ public class BloodSugarReceiveService {
     private final PatientRepository patientRepository;
     private final BloodSugarRepository bloodSugarRepository;
     private final AccountRepository accountRepository;
-    private final BloodSugarSyncService bloodSugarSyncService;
 
     /** operationType 常量 */
     private static final int OP_SAVE = 1;
@@ -114,7 +113,6 @@ public class BloodSugarReceiveService {
         bloodSugarRepository.save(bs);
         log.info("[BloodSugar] 新增成功 id={}, pid={}, patNo={}, result={}",
                 bs.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
-        triggerSync(patient.getId(), dto.getBloGluDateTime());
         return ApiResult.success("血糖保存成功");
     }
 
@@ -131,7 +129,6 @@ public class BloodSugarReceiveService {
         bloodSugarRepository.save(existing);
         log.info("[BloodSugar] 更新成功({}) id={}, pid={}, patNo={}, result={}",
                 reason, existing.getId(), patient.getId(), dto.getPatNo(), dto.getBloGluVal());
-        triggerSync(patient.getId(), dto.getBloGluDateTime());
         return ApiResult.success("血糖修改成功");
     }
 
@@ -141,7 +138,6 @@ public class BloodSugarReceiveService {
         bloodSugarRepository.save(existing);
         log.info("[BloodSugar] 逻辑删除成功 id={}, pid={}, patNo={}",
                 existing.getId(), patient.getId(), dto.getPatNo());
-        triggerSync(patient.getId(), dto.getBloGluDateTime());
         return ApiResult.success("血糖删除成功");
     }
 
@@ -188,13 +184,4 @@ public class BloodSugarReceiveService {
         return null;
     }
 
-    /** 定向桶重算：仅对受影响的整点小时桶做同步（替代全量 sync）。 */
-    private void triggerSync(String pid, Date sourceTime) {
-        try {
-            bloodSugarSyncService.resyncBucket(pid, sourceTime);
-            log.info("[BloodSugar] 桶重算完成 pid={}, sourceTime={}", pid, sourceTime);
-        } catch (Exception e) {
-            log.error("[BloodSugar] 桶重算异常（不影响主流程）pid={}, sourceTime={}", pid, sourceTime, e);
-        }
-    }
 }
