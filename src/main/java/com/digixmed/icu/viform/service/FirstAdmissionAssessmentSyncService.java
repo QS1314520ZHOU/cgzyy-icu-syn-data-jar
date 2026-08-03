@@ -54,7 +54,7 @@ public class FirstAdmissionAssessmentSyncService {
     /** 目标字段白名单 */
     private static final Set<String> TARGET_FIELDS = new LinkedHashSet<>(Arrays.asList(
             "ttt", "braden", "branden2", "barthel", "barthel2",
-            "dght", "dght2", "lcpdf", "mpft", "morde", "morde2"
+            "dght", "dght2", "lcpdf", "mpff", "morde", "morde2"
     ));
 
     /** 变更记录 */

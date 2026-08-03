@@ -60,6 +60,10 @@ public class DFormFieldValueComparator {
      */
     public Object normalizeForWrite(String field, Object oldValue, Object sourceValue) {
         if (sourceValue == null) return null;
+        // List<String> 字段直接返回（已在 buildCandidateValues 中构造好）
+        if (sourceValue instanceof List) {
+            return sourceValue;
+        }
         if (isNumericField(field)) {
             // 尽量保持目标原有类型
             if (oldValue instanceof Number) {

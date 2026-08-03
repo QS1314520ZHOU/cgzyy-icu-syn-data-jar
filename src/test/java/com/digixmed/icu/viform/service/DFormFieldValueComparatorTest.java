@@ -4,6 +4,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.util.Arrays;
+import java.util.List;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -165,5 +166,45 @@ class DFormFieldValueComparatorTest {
     @Test
     void normalize_emptySource() {
         assertNull(comparator.normalizeForWrite("braden", null, null));
+    }
+
+    // ===== List<String> comparison =====
+
+    @Test
+    void listEqual_identical() {
+        assertTrue(comparator.valuesEqual("mpff",
+                Arrays.asList("Mordepingfenfa"), Arrays.asList("Mordepingfenfa")));
+    }
+
+    @Test
+    void listEqual_stringTrimmed() {
+        assertTrue(comparator.valuesEqual("mpff",
+                Arrays.asList(" Mordepingfenfa "), Arrays.asList("Mordepingfenfa")));
+    }
+
+    @Test
+    void listEqual_different() {
+        assertFalse(comparator.valuesEqual("mpff",
+                Arrays.asList("Mordepingfenfa"), Arrays.asList("OtherMethod")));
+    }
+
+    @Test
+    void listEqual_emptyVsEmpty() {
+        assertTrue(comparator.valuesEqual("lcpdf",
+                Arrays.asList(), Arrays.asList()));
+    }
+
+    @Test
+    void listEqual_oneEmptyOneNotEmpty() {
+        assertFalse(comparator.valuesEqual("mpff",
+                Arrays.asList(), Arrays.asList("Mordepingfenfa")));
+    }
+
+    @Test
+    void normalize_listField() {
+        Object result = comparator.normalizeForWrite("mpff", null,
+                Arrays.asList("Mordepingfenfa"));
+        assertTrue(result instanceof List);
+        assertEquals(Arrays.asList("Mordepingfenfa"), result);
     }
 }

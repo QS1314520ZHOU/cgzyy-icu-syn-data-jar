@@ -1,5 +1,6 @@
 package com.digixmed.icu.viform.service;
 
+import com.digixmed.icu.viform.config.FirstAdmissionAssessmentSyncProperties;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.entity.Score;
 import lombok.RequiredArgsConstructor;
@@ -24,13 +25,16 @@ public class FirstAssessmentSourceSelector {
      */
     private static final Map<String, String[]> BEDSIDE_CODE_MAPPING = new LinkedHashMap<>();
     static {
-        // code → [primaryField, ...secondaryField]
-        // primaryField = bedside.strVal 直接映射的目标字段
         BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpg"});
         BEDSIDE_CODE_MAPPING.put("param_yaChuang_score", new String[]{"braden", "branden2"});
         BEDSIDE_CODE_MAPPING.put("param_score_adl", new String[]{"barthel", "barthel2"});
         BEDSIDE_CODE_MAPPING.put("param_score_dght", new String[]{"dght", "dght2"});
     }
+
+    /** mpff 固定值（Morse 评分方法） */
+    private static final String MORSE_METHOD_VALUE = "Mordepingfenfa";
+
+    private final FirstAdmissionAssessmentSyncProperties properties;
 
     /**
      * 从批量查询结果中按 (pid, code) 选择入科后第一次有效 bedside。
@@ -179,16 +183,21 @@ public class FirstAssessmentSourceSelector {
                 candidates.put("morde2", score.getConclusion().trim());
             }
 
-            // 临床判定法
+            // 临床判定法 → lcpdf (List<String>)
             boolean clinicalUsed = isClinicalJudgmentUsed(score);
             if (clinicalUsed) {
-                candidates.put("lcpdf", "lcpdf");
+                String clinicalValue = properties.getClinicalMethodValue();
+                if (clinicalValue == null || clinicalValue.trim().isEmpty()) {
+                    log.warn("[FirstAssessmentSync] clinical-method-value 未配置，跳过 lcpdf 同步");
+                } else {
+                    candidates.put("lcpdf", Collections.singletonList(clinicalValue.trim()));
+                }
             }
 
-            // Morse 评分量表
+            // Morse 评分量表 → mpff (List<String>)
             boolean morseUsed = isMorseUsed(score);
             if (morseUsed) {
-                candidates.put("mpft", "mpft");
+                candidates.put("mpff", Collections.singletonList(MORSE_METHOD_VALUE));
             }
         }
 

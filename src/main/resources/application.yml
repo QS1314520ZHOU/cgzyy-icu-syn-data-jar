@@ -138,9 +138,10 @@ first-assessment-sync:
   overwrite-existing: true
   update-only-when-changed: true
   score-type: patientFallDangerLJRMYY
+  clinical-method-value: ${CLINICAL_METHOD_VALUE:}
   form-codes:
     - ruyuanhulipinggudan
-    - rukehulipinggudan
+    - zhuanruhulipinggudan
   bedside-codes:
     - param_tengTong_score
     - param_yaChuang_score

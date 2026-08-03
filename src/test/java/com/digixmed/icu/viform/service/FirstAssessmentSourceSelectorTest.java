@@ -1,5 +1,6 @@
 package com.digixmed.icu.viform.service;
 
+import com.digixmed.icu.viform.config.FirstAdmissionAssessmentSyncProperties;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.entity.Score;
 import org.junit.jupiter.api.BeforeEach;
@@ -18,7 +19,9 @@ class FirstAssessmentSourceSelectorTest {
 
     @BeforeEach
     void setUp() {
-        selector = new FirstAssessmentSourceSelector();
+        FirstAdmissionAssessmentSyncProperties props = new FirstAdmissionAssessmentSyncProperties();
+        props.setClinicalMethodValue("testClinicalCode");
+        selector = new FirstAssessmentSourceSelector(props);
     }
 
     @Test
@@ -160,7 +163,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(Map.of("age", true));
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
-        assertEquals("lcpdf", result.get("lcpdf"));
+        assertEquals(Collections.singletonList("testClinicalCode"), result.get("lcpdf"));
     }
 
     @Test
@@ -180,7 +183,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(Map.of("age", "true"));
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
-        assertEquals("lcpdf", result.get("lcpdf"));
+        assertEquals(Collections.singletonList("testClinicalCode"), result.get("lcpdf"));
     }
 
     @Test
@@ -200,7 +203,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", 15));
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
-        assertEquals("mpft", result.get("mpft"));
+        assertEquals(Collections.singletonList("Mordepingfenfa"), result.get("mpff"));
     }
 
     @Test
@@ -210,7 +213,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", "0"));
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
-        assertEquals("mpft", result.get("mpft"));
+        assertEquals(Collections.singletonList("Mordepingfenfa"), result.get("mpff"));
     }
 
     @Test
@@ -220,7 +223,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", "abc"));
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
-        assertNull(result.get("mpft"));
+        assertNull(result.get("mpff"));
     }
 
     @Test
@@ -234,7 +237,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(factor);
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
-        assertNull(result.get("mpft"));
+        assertNull(result.get("mpff"));
     }
 
     @Test
@@ -245,6 +248,30 @@ class FirstAssessmentSourceSelectorTest {
         Map<String, Score> scoreMap = Map.of("p1", score);
         assertDoesNotThrow(() ->
                 selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap));
+    }
+
+    @Test
+    void candidate_clinicalNotConfigured_skipped() {
+        FirstAdmissionAssessmentSyncProperties props = new FirstAdmissionAssessmentSyncProperties();
+        props.setClinicalMethodValue(null);
+        FirstAssessmentSourceSelector noConfigSelector = new FirstAssessmentSourceSelector(props);
+
+        Score score = new Score();
+        score.setPid("p1");
+        score.setPatientFallDangerFactorV2(Map.of("age", true));
+        Map<String, Score> scoreMap = Map.of("p1", score);
+        Map<String, Object> result = noConfigSelector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        assertNull(result.get("lcpdf"));
+    }
+
+    @Test
+    void candidate_mpff_returnsList() {
+        Score score = new Score();
+        score.setPid("p1");
+        score.setPatientFallDangerFactorV2(Map.of("fallHistory", 15));
+        Map<String, Score> scoreMap = Map.of("p1", score);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        assertTrue(result.get("mpff") instanceof List);
     }
 
     // ==================== helpers ====================

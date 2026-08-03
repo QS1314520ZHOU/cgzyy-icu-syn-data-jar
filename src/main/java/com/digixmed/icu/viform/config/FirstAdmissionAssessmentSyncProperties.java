@@ -32,7 +32,13 @@ public class FirstAdmissionAssessmentSyncProperties {
     private String scoreType = "patientFallDangerLJRMYY";
 
     /** 目标表单编码列表 */
-    private List<String> formCodes = Arrays.asList("ruyuanhulipinggudan", "rukehulipinggudan");
+    private List<String> formCodes = Arrays.asList("ruyuanhulipinggudan", "zhuanruhulipinggudan");
+
+    /**
+     * 临床判定法选项编码（List<String> 值）。
+     * <p>必须从真实表单定义确认，不能猜测。为空时跳过 lcpdf 同步。</p>
+     */
+    private String clinicalMethodValue;
 
     /** 需要查询的 bedside code 列表 */
     private List<String> bedsideCodes = Arrays.asList(
