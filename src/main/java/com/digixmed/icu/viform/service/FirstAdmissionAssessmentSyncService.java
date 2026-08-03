@@ -206,22 +206,16 @@ public class FirstAdmissionAssessmentSyncService {
                 Date admissionTime = admissionTimes.get(pid);
                 if (admissionTime == null) continue;
 
-                // 构建候选值
-                Map<String, Object> candidateValues = sourceSelector.buildCandidateValues(
-                        pid, firstBedsideMap, firstScoreMap);
-
-                if (candidateValues.isEmpty()) {
-                    noSourcePatients.incrementAndGet();
-                    log.debug("[FirstAssessmentSync] pid={} 无有效源数据，跳过", pid);
-                    continue;
-                }
-
                 List<DFormData> patientForms = formsByPid.getOrDefault(pid, Collections.emptyList());
 
-                // 6. 对两个 formCode 分别处理
+                // 6. 对两个 formCode 分别处理（lcpdf 可能按 formCode 不同，需分别构建）
                 for (String formCode : TARGET_FORM_CODES) {
                     totalForms.incrementAndGet();
                     try {
+                        // 构建候选值（传入 formCode 以获取正确的 lcpdf 编码）
+                        Map<String, Object> candidateValues = sourceSelector.buildCandidateValues(
+                                pid, firstBedsideMap, firstScoreMap, formCode);
+
                         Optional<DFormData> existing = patientForms.stream()
                                 .filter(f -> formCode.equals(f.getFormCode()))
                                 .findFirst();

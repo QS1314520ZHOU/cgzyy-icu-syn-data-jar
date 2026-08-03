@@ -14,7 +14,7 @@ import lombok.NoArgsConstructor;
 @AllArgsConstructor
 public class DFormFieldData {
 
-    /** 字段名，如 "ttpg"、"braden"、"lcpdf" */
+    /** 字段名，如 "ttpf"、"braden"、"lcpdf" */
     private String field;
 
     /** 字段值（可为 String、Number、Boolean、List&lt;String&gt; 等） */

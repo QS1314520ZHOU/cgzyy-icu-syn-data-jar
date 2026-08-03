@@ -178,6 +178,6 @@ public class DFormFieldValueComparator {
     }
 
     private boolean isNumericField(String field) {
-        return "morde".equals(field) || "ttt".equals(field);
+        return "morde".equals(field);
     }
 }

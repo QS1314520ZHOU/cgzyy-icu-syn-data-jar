@@ -139,6 +139,9 @@ first-assessment-sync:
   update-only-when-changed: true
   score-type: patientFallDangerLJRMYY
   clinical-method-value: ${CLINICAL_METHOD_VALUE:}
+  clinical-method-values:
+    zhuanruhulipinggudan: ${ZHUANRU_CLINICAL_METHOD_VALUE:}
+    ruyuanhulipinggudan: ${RUYUAN_CLINICAL_METHOD_VALUE:}
   form-codes:
     - ruyuanhulipinggudan
     - zhuanruhulipinggudan

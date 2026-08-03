@@ -126,12 +126,13 @@ class FirstAssessmentSourceSelectorTest {
     }
 
     @Test
-    void candidate_ttpgMapping() {
+    void candidate_ttpfMapping() {
         Bedside teng = buildBedside("p1", "param_tengTong_score", "3",
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_tengTong_score", teng));
-        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap());
-        assertEquals("3", result.get("ttpg"));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
+                "zhuanruhulipinggudan");
+        assertEquals("3", result.get("ttpf"));
     }
 
     @Test
@@ -139,7 +140,8 @@ class FirstAssessmentSourceSelectorTest {
         Bedside braden = buildBedside("p1", "param_yaChuang_score", "12(高度危险)",
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_yaChuang_score", braden));
-        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap());
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
+                "zhuanruhulipinggudan");
         assertEquals("12(高度危险)", result.get("braden"));
         assertEquals("高度危险", result.get("branden2"));
     }
@@ -151,7 +153,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setTotal(35);
         score.setConclusion("低风险");
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertEquals("35", result.get("morde"));
         assertEquals("低风险", result.get("morde2"));
     }
@@ -162,7 +164,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("age", true));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertEquals(Collections.singletonList("testClinicalCode"), result.get("lcpdf"));
     }
 
@@ -172,7 +174,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("age", "false"));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertNull(result.get("lcpdf"));
     }
 
@@ -182,7 +184,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("age", "true"));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertEquals(Collections.singletonList("testClinicalCode"), result.get("lcpdf"));
     }
 
@@ -192,7 +194,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("age", "1"));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertNull(result.get("lcpdf"));
     }
 
@@ -202,7 +204,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", 15));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertEquals(Collections.singletonList("Mordepingfenfa"), result.get("mpff"));
     }
 
@@ -212,7 +214,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", "0"));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertEquals(Collections.singletonList("Mordepingfenfa"), result.get("mpff"));
     }
 
@@ -222,7 +224,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", "abc"));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertNull(result.get("mpff"));
     }
 
@@ -236,7 +238,7 @@ class FirstAssessmentSourceSelectorTest {
         factor.put("useWalkTool", null);
         score.setPatientFallDangerFactorV2(factor);
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertNull(result.get("mpff"));
     }
 
@@ -247,7 +249,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(null);
         Map<String, Score> scoreMap = Map.of("p1", score);
         assertDoesNotThrow(() ->
-                selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap));
+                selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan"));
     }
 
     @Test
@@ -260,7 +262,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("age", true));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = noConfigSelector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = noConfigSelector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertNull(result.get("lcpdf"));
     }
 
@@ -270,7 +272,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPid("p1");
         score.setPatientFallDangerFactorV2(Map.of("fallHistory", 15));
         Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap);
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, "zhuanruhulipinggudan");
         assertTrue(result.get("mpff") instanceof List);
     }
 

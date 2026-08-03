@@ -4,7 +4,9 @@ import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 首次入科评估同步配置（application.yml 中的 {@code first-assessment-sync} 段）。
@@ -35,8 +37,13 @@ public class FirstAdmissionAssessmentSyncProperties {
     private List<String> formCodes = Arrays.asList("ruyuanhulipinggudan", "zhuanruhulipinggudan");
 
     /**
-     * 临床判定法选项编码（List<String> 值）。
+     * 临床判定法选项编码（按 formCode 分别配置）。
      * <p>必须从真实表单定义确认，不能猜测。为空时跳过 lcpdf 同步。</p>
+     */
+    private Map<String, String> clinicalMethodValues = new HashMap<>();
+
+    /**
+     * 旧配置兼容（全局 fallback）。
      */
     private String clinicalMethodValue;
 

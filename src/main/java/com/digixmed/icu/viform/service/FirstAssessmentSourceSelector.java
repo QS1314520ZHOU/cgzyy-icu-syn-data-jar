@@ -25,7 +25,7 @@ public class FirstAssessmentSourceSelector {
      */
     private static final Map<String, String[]> BEDSIDE_CODE_MAPPING = new LinkedHashMap<>();
     static {
-        BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpg"});
+        BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpf"});
         BEDSIDE_CODE_MAPPING.put("param_yaChuang_score", new String[]{"braden", "branden2"});
         BEDSIDE_CODE_MAPPING.put("param_score_adl", new String[]{"barthel", "barthel2"});
         BEDSIDE_CODE_MAPPING.put("param_score_dght", new String[]{"dght", "dght2"});
@@ -143,11 +143,13 @@ public class FirstAssessmentSourceSelector {
      * @param pid        患者 ID
      * @param bedsideMap pid → code → 第一次有效 bedside
      * @param scoreMap   pid → 第一次有效 score
+     * @param formCode   当前处理的表单编码（用于 lcpdf 编码查找）
      * @return 目标字段 → 候选值
      */
     public Map<String, Object> buildCandidateValues(String pid,
                                                      Map<String, Map<String, Bedside>> bedsideMap,
-                                                     Map<String, Score> scoreMap) {
+                                                     Map<String, Score> scoreMap,
+                                                     String formCode) {
         Map<String, Object> candidates = new LinkedHashMap<>();
 
         // 1. bedside 映射
@@ -183,14 +185,14 @@ public class FirstAssessmentSourceSelector {
                 candidates.put("morde2", score.getConclusion().trim());
             }
 
-            // 临床判定法 → lcpdf (List<String>)
+            // 临床判定法 → lcpdf (List<String>)，按 formCode 分别配置
             boolean clinicalUsed = isClinicalJudgmentUsed(score);
             if (clinicalUsed) {
-                String clinicalValue = properties.getClinicalMethodValue();
-                if (clinicalValue == null || clinicalValue.trim().isEmpty()) {
-                    log.warn("[FirstAssessmentSync] clinical-method-value 未配置，跳过 lcpdf 同步");
+                String clinicalValue = resolveClinicalMethodValue(formCode);
+                if (clinicalValue == null) {
+                    log.warn("[FirstAssessmentSync] clinical-method-values 未配置 formCode={}，跳过 lcpdf", formCode);
                 } else {
-                    candidates.put("lcpdf", Collections.singletonList(clinicalValue.trim()));
+                    candidates.put("lcpdf", Collections.singletonList(clinicalValue));
                 }
             }
 
@@ -205,6 +207,24 @@ public class FirstAssessmentSourceSelector {
     }
 
     // ==================== 内部工具 ====================
+
+    /**
+     * 按 formCode 解析临床判定法选项编码。
+     * <p>优先查 Map；fallback 查旧字段 clinicalMethodValue。</p>
+     */
+    private String resolveClinicalMethodValue(String formCode) {
+        Map<String, String> values = properties.getClinicalMethodValues();
+        if (values != null && values.containsKey(formCode)) {
+            String v = values.get(formCode);
+            if (v != null && !v.trim().isEmpty()) return v.trim();
+        }
+        // fallback: 旧配置
+        String fallback = properties.getClinicalMethodValue();
+        if (fallback != null && !fallback.trim().isEmpty()) {
+            return fallback.trim();
+        }
+        return null;
+    }
 
     private Optional<String> extractParenthesizedConclusion(String value) {
         if (value == null) return Optional.empty();
