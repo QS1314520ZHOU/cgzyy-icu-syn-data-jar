@@ -129,6 +129,25 @@ bloodsugar-sync:
   scan-interval-ms: 300000                # 定时扫描间隔（5 分钟）
 
 # ===================================================================
+# 首次入科评估同步配置（bedside/score → dFormData）
+# ===================================================================
+first-assessment-sync:
+  enabled: true
+  timezone: Asia/Shanghai
+  scan-interval-ms: 300000
+  overwrite-existing: true
+  update-only-when-changed: true
+  score-type: patientFallDangerLJRMYY
+  form-codes:
+    - ruyuanhulipinggudan
+    - rukehulipinggudan
+  bedside-codes:
+    - param_tengTong_score
+    - param_yaChuang_score
+    - param_score_adl
+    - param_score_dght
+
+# ===================================================================
 # 医嘱驱动 bedside 同步配置（param_biSiLiquid 鼻饲液）
 # ===================================================================
 order-sync:

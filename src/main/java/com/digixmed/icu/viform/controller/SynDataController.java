@@ -6,6 +6,7 @@ import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.service.AdmittedPatientBedsideService;
 import com.digixmed.icu.viform.service.OrderSyncService;
 import com.digixmed.icu.viform.service.ParamTimedSyncService;
+import com.digixmed.icu.viform.service.FirstAdmissionAssessmentSyncService;
 import com.digixmed.icu.viform.service.SourceDrivenSyncService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -35,6 +36,7 @@ public class SynDataController {
     private final ParamTimedSyncService paramTimedSyncService;
     private final OrderSyncService orderSyncService;
     private final SourceDrivenSyncService sourceDrivenSyncService;
+    private final FirstAdmissionAssessmentSyncService firstAdmissionAssessmentSyncService;
     private final SyncGroupsProperties syncGroupsProperties;
     private final OrderSyncProperties orderSyncProperties;
 
@@ -178,6 +180,20 @@ public class SynDataController {
         log.info("[API] POST /syn/bloodsugar-sync - 血糖同步已停用");
         return Map.of("message", "血糖到bedside同步已停用", "stats",
                 Map.of("total", 0, "success", 0, "skip", 0, "fail", 0));
+    }
+
+    /**
+     * 手动触发首次入科评估同步。
+     */
+    @PostMapping("/first-admission-assessment")
+    public Map<String, Object> firstAdmissionAssessment() {
+        log.info("[API] POST /syn/first-admission-assessment - 手动触发首次入科评估同步");
+        long start = System.currentTimeMillis();
+        FirstAdmissionAssessmentSyncService.SyncResult result =
+                firstAdmissionAssessmentSyncService.syncAllAdmittedPatients();
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/first-admission-assessment 完成: 耗时={}ms", elapsed);
+        return Map.of("success", true, "data", result.toMap(), "elapsedMs", elapsed);
     }
 
     /** 调试：查询某在院患者的 bedside 记录。 */

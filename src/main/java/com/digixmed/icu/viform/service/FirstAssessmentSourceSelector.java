@@ -1,0 +1,277 @@
+package com.digixmed.icu.viform.service;
+
+import com.digixmed.icu.viform.entity.Bedside;
+import com.digixmed.icu.viform.entity.Score;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.stereotype.Component;
+
+import java.util.*;
+import java.util.stream.Collectors;
+
+/**
+ * 从 bedside/score 中选择入科后第一次有效评估的逻辑。
+ *
+ * <p>按 (pid, code) 分组后取 time 升序第一条。</p>
+ */
+@Slf4j
+@Component
+@RequiredArgsConstructor
+public class FirstAssessmentSourceSelector {
+
+    /**
+     * bedside code → 表单字段映射。
+     */
+    private static final Map<String, String[]> BEDSIDE_CODE_MAPPING = new LinkedHashMap<>();
+    static {
+        // code → [primaryField, ...secondaryField]
+        // primaryField = bedside.strVal 直接映射的目标字段
+        BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpg"});
+        BEDSIDE_CODE_MAPPING.put("param_yaChuang_score", new String[]{"braden", "branden2"});
+        BEDSIDE_CODE_MAPPING.put("param_score_adl", new String[]{"barthel", "barthel2"});
+        BEDSIDE_CODE_MAPPING.put("param_score_dght", new String[]{"dght", "dght2"});
+    }
+
+    /**
+     * 从批量查询结果中按 (pid, code) 选择入科后第一次有效 bedside。
+     *
+     * @param bedsides 该批次所有相关 bedside 记录
+     * @param icuAdmissionTimes pid → icuAdmissionTime 映射
+     * @return pid → code → 第一次有效 bedside
+     */
+    public Map<String, Map<String, Bedside>> selectFirstBedsidePerPidAndCode(
+            List<Bedside> bedsides,
+            Map<String, Date> icuAdmissionTimes) {
+
+        // 按 pid → code 分组
+        Map<String, Map<String, List<Bedside>>> grouped = new HashMap<>();
+        for (Bedside b : bedsides) {
+            if (b.getPid() == null || b.getCode() == null) continue;
+            grouped.computeIfAbsent(b.getPid(), k -> new HashMap<>())
+                    .computeIfAbsent(b.getCode(), k -> new ArrayList<>())
+                    .add(b);
+        }
+
+        Map<String, Map<String, Bedside>> result = new HashMap<>();
+
+        for (Map.Entry<String, Map<String, List<Bedside>>> pidEntry : grouped.entrySet()) {
+            String pid = pidEntry.getKey();
+            Date admissionTime = icuAdmissionTimes.get(pid);
+            if (admissionTime == null) continue;
+
+            Map<String, Bedside> codeToFirst = new HashMap<>();
+
+            for (Map.Entry<String, List<Bedside>> codeEntry : pidEntry.getValue().entrySet()) {
+                String code = codeEntry.getKey();
+
+                // 筛选有效记录：valid=true, strVal非空, time >= icuAdmissionTime
+                List<Bedside> validList = codeEntry.getValue().stream()
+                        .filter(b -> Boolean.TRUE.equals(b.getValid()))
+                        .filter(b -> b.getStrVal() != null && !b.getStrVal().trim().isEmpty())
+                        .filter(b -> b.getTime() != null && !b.getTime().before(admissionTime))
+                        .collect(Collectors.toList());
+
+                if (validList.isEmpty()) continue;
+
+                // 排序：time升序 → editTime升序 → _id升序 → 取第一条
+                validList.sort(Comparator
+                        .comparing((Bedside b) -> b.getTime(), Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing((Bedside b) -> b.getEditTime(), Comparator.nullsLast(Comparator.naturalOrder()))
+                        .thenComparing((Bedside b) -> b.getId(), Comparator.nullsLast(Comparator.naturalOrder())));
+
+                codeToFirst.put(code, validList.get(0));
+            }
+
+            if (!codeToFirst.isEmpty()) {
+                result.put(pid, codeToFirst);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 从批量查询结果中按 pid 选择入科后第一次有效 score。
+     *
+     * @param scores 该批次所有相关 score 记录
+     * @param icuAdmissionTimes pid → icuAdmissionTime 映射
+     * @return pid → 第一次有效 score
+     */
+    public Map<String, Score> selectFirstScorePerPid(
+            List<Score> scores,
+            Map<String, Date> icuAdmissionTimes) {
+
+        // 按 pid 分组
+        Map<String, List<Score>> byPid = new HashMap<>();
+        for (Score s : scores) {
+            if (s.getPid() == null) continue;
+            byPid.computeIfAbsent(s.getPid(), k -> new ArrayList<>()).add(s);
+        }
+
+        Map<String, Score> result = new HashMap<>();
+
+        for (Map.Entry<String, List<Score>> entry : byPid.entrySet()) {
+            String pid = entry.getKey();
+            Date admissionTime = icuAdmissionTimes.get(pid);
+            if (admissionTime == null) continue;
+
+            // 筛选有效记录：valid=true, time >= icuAdmissionTime
+            List<Score> validList = entry.getValue().stream()
+                    .filter(s -> Boolean.TRUE.equals(s.getValid()))
+                    .filter(s -> s.getTime() != null && !s.getTime().before(admissionTime))
+                    .collect(Collectors.toList());
+
+            if (validList.isEmpty()) continue;
+
+            // 排序：time升序 → editTime升序 → _id升序 → 取第一条
+            validList.sort(Comparator
+                    .comparing((Score s) -> s.getTime(), Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing((Score s) -> s.getEditTime(), Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing((Score s) -> s.getId(), Comparator.nullsLast(Comparator.naturalOrder())));
+
+            result.put(pid, validList.get(0));
+        }
+        return result;
+    }
+
+    /**
+     * 根据 bedside 和 score 构建候选值映射（field → value）。
+     *
+     * @param pid        患者 ID
+     * @param bedsideMap pid → code → 第一次有效 bedside
+     * @param scoreMap   pid → 第一次有效 score
+     * @return 目标字段 → 候选值
+     */
+    public Map<String, Object> buildCandidateValues(String pid,
+                                                     Map<String, Map<String, Bedside>> bedsideMap,
+                                                     Map<String, Score> scoreMap) {
+        Map<String, Object> candidates = new LinkedHashMap<>();
+
+        // 1. bedside 映射
+        Map<String, Bedside> pidBedside = bedsideMap.getOrDefault(pid, Collections.emptyMap());
+        for (Map.Entry<String, String[]> mapping : BEDSIDE_CODE_MAPPING.entrySet()) {
+            Bedside source = pidBedside.get(mapping.getKey());
+            if (source == null) continue;
+
+            String[] targetFields = mapping.getValue();
+            String strVal = source.getStrVal().trim();
+
+            // 主字段（直接取 strVal）
+            candidates.put(targetFields[0], strVal);
+
+            // 派生字段（括号内结论）
+            if (targetFields.length > 1) {
+                Optional<String> conclusion = extractParenthesizedConclusion(strVal);
+                if (conclusion.isPresent()) {
+                    candidates.put(targetFields[1], conclusion.get());
+                }
+            }
+        }
+
+        // 2. score 映射（跌倒/坠床）
+        Score score = scoreMap.get(pid);
+        if (score != null) {
+            // morde: score.total → 规范化
+            if (score.getTotal() != null) {
+                candidates.put("morde", normalizeScoreTotal(score.getTotal()));
+            }
+            // morde2: score.conclusion
+            if (score.getConclusion() != null && !score.getConclusion().trim().isEmpty()) {
+                candidates.put("morde2", score.getConclusion().trim());
+            }
+
+            // 临床判定法
+            boolean clinicalUsed = isClinicalJudgmentUsed(score);
+            if (clinicalUsed) {
+                candidates.put("lcpdf", "lcpdf");
+            }
+
+            // Morse 评分量表
+            boolean morseUsed = isMorseUsed(score);
+            if (morseUsed) {
+                candidates.put("mpft", "mpft");
+            }
+        }
+
+        return candidates;
+    }
+
+    // ==================== 内部工具 ====================
+
+    private Optional<String> extractParenthesizedConclusion(String value) {
+        if (value == null) return Optional.empty();
+        java.util.regex.Matcher m =
+                java.util.regex.Pattern.compile("[（(]\\s*(.+?)\\s*[）)]").matcher(value.trim());
+        if (m.find()) {
+            String inner = m.group(1).trim();
+            if (!inner.isEmpty()) return Optional.of(inner);
+        }
+        return Optional.empty();
+    }
+
+    private String normalizeScoreTotal(Object total) {
+        if (total instanceof Number) {
+            int v = ((Number) total).intValue();
+            return String.valueOf(v);
+        }
+        String s = total.toString().trim();
+        try {
+            int v = (int) Double.parseDouble(s);
+            return String.valueOf(v);
+        } catch (NumberFormatException e) {
+            return s;
+        }
+    }
+
+    /**
+     * 临床判定法：任意关键字段为 Boolean.TRUE 或字符串 "true" 即为 true。
+     */
+    private boolean isClinicalJudgmentUsed(Score score) {
+        Map<String, Object> factor = score.getPatientFallDangerFactorV2();
+        if (factor == null) return false;
+        String[] keys = {"hunmiOntanhaun", "preHospitalization", "sylzys",
+                "age", "thisHospitalization", "exist", "sixHours"};
+        for (String key : keys) {
+            if (isStrictTrue(factor.get(key))) return true;
+        }
+        return false;
+    }
+
+    private boolean isStrictTrue(Object value) {
+        if (value == null) return false;
+        if (value instanceof Boolean) return Boolean.TRUE.equals(value);
+        if (value instanceof String) {
+            return "true".equalsIgnoreCase(((String) value).trim());
+        }
+        return false;
+    }
+
+    /**
+     * Morse 评分量表：任意关键字段能安全转换为数字即为 true（包括 0）。
+     */
+    private boolean isMorseUsed(Score score) {
+        Map<String, Object> factor = score.getPatientFallDangerFactorV2();
+        if (factor == null) return false;
+        String[] keys = {"fallHistory", "otherDiagnosis", "useWalkTool",
+                "intravenousInjection", "walk", "mentality"};
+        for (String key : keys) {
+            if (isNumericValue(factor.get(key))) return true;
+        }
+        return false;
+    }
+
+    private boolean isNumericValue(Object value) {
+        if (value == null) return false;
+        if (value instanceof Number) return true;
+        if (value instanceof String) {
+            String s = ((String) value).trim();
+            if (s.isEmpty()) return false;
+            try {
+                Double.parseDouble(s);
+                return true;
+            } catch (NumberFormatException e) {
+                return false;
+            }
+        }
+        return false;
+    }
+}
