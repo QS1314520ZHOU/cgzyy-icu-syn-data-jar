@@ -6,30 +6,15 @@ import org.springframework.data.mongodb.core.index.CompoundIndex;
 import org.springframework.data.mongodb.core.index.CompoundIndexes;
 import org.springframework.data.mongodb.core.mapping.Document;
 
+import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 
 /**
  * SmartCare 库 dFormData 集合实体 —— 入院/入科护理评估单。
  *
- * <p>存量文档 _class：{@code com.digixmed.icu.smartcare.database.entitys.DFormData}</p>
- *
- * <p>示例文档结构：</p>
- * <pre>
- * {
- *   _id: ObjectId,
- *   pid: "patientId",
- *   formCode: "ruyuanhulipinggudan" | "rukehulipinggudan",
- *   status: "valid",
- *   fieldDataList: [
- *     { field: "ttpg", value: "3" },
- *     { field: "braden", value: "12(高度危险)" },
- *     ...
- *   ],
- *   editTime: ISODate,
- *   _class: "..."
- * }
- * </pre>
+ * <p>存量文档 _class：
+ * {@code com.digixmed.icu.smartcare.database.entitys.dFormData.DFormData}</p>
  */
 @Data
 @Document("dFormData")
@@ -41,6 +26,10 @@ import java.util.List;
 })
 public class DFormData {
 
+    /** SmartCare 原始 _class 值（创建新表单时必须使用此值） */
+    public static final String D_FORM_DATA_CLASS =
+            "com.digixmed.icu.smartcare.database.entitys.dFormData.DFormData";
+
     /** MongoDB 主键 (_id) */
     @Id
     private String id;
@@ -48,14 +37,14 @@ public class DFormData {
     /** 患者 ID，对应 patient._id */
     private String pid;
 
-    /** 表单编码：ruyuanhulipinggudan / rukehulipinggudan */
+    /** 表单编码 */
     private String formCode;
 
     /** 表单状态：valid / invalid */
     private String status;
 
     /** 表单字段数据列表 */
-    private List<DFormFieldData> fieldDataList;
+    private List<DFormFieldData> fieldDataList = new ArrayList<>();
 
     /** 最后编辑时间 */
     private Date editTime;
