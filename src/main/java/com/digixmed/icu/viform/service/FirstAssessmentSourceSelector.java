@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -20,15 +22,24 @@ import java.util.stream.Collectors;
 @RequiredArgsConstructor
 public class FirstAssessmentSourceSelector {
 
-    /**
-     * bedside code → 表单字段映射。
-     */
+    // ── 评分字段：只同步数值分数（不含括号结论） ──────────────────────
+
+    /** bedside code → 表单字段（仅分数） */
+    private static final Map<String, String> SCORE_FIELD_MAPPING = new LinkedHashMap<>();
+    static {
+        SCORE_FIELD_MAPPING.put("param_yaChuang_score", "braden");   // Braden 压疮评分
+        SCORE_FIELD_MAPPING.put("param_score_adl",      "barthel");  // Barthel 日常生活活动
+        SCORE_FIELD_MAPPING.put("param_score_dght",     "dght");     // 管道滑脱评估
+    }
+
+    /** 匹配数字（整数、小数、负数） */
+    private static final Pattern SCORE_PATTERN = Pattern.compile("[-+]?\\d+(?:\\.\\d+)?");
+
+    // ── 其他 bedside code → 表单字段 ────────────────────────────────
+
     private static final Map<String, String[]> BEDSIDE_CODE_MAPPING = new LinkedHashMap<>();
     static {
         BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpf"});
-        BEDSIDE_CODE_MAPPING.put("param_yaChuang_score", new String[]{"braden", "branden2"});
-        BEDSIDE_CODE_MAPPING.put("param_score_adl", new String[]{"barthel", "barthel2"});
-        BEDSIDE_CODE_MAPPING.put("param_score_dght", new String[]{"dght", "dght2"});
     }
 
     /** mpff 固定值（Morse 评分方法） */
@@ -152,8 +163,19 @@ public class FirstAssessmentSourceSelector {
                                                      String formCode) {
         Map<String, Object> candidates = new LinkedHashMap<>();
 
-        // 1. bedside 映射
+        // 1a. bedside 映射：SCORE_FIELD_MAPPING（只取数值分数，不含括号结论）
         Map<String, Bedside> pidBedside = bedsideMap.getOrDefault(pid, Collections.emptyMap());
+        for (Map.Entry<String, String> entry : SCORE_FIELD_MAPPING.entrySet()) {
+            Bedside source = pidBedside.get(entry.getKey());
+            if (source == null) continue;
+
+            String score = extractScoreOnly(source.getStrVal());
+            if (score != null && !score.isEmpty()) {
+                candidates.put(entry.getValue(), score);
+            }
+        }
+
+        // 1b. bedside 映射：BEDSIDE_CODE_MAPPING（ttpf 等，保留原有逻辑）
         for (Map.Entry<String, String[]> mapping : BEDSIDE_CODE_MAPPING.entrySet()) {
             Bedside source = pidBedside.get(mapping.getKey());
             if (source == null) continue;
@@ -161,10 +183,8 @@ public class FirstAssessmentSourceSelector {
             String[] targetFields = mapping.getValue();
             String strVal = source.getStrVal().trim();
 
-            // 主字段（直接取 strVal）
             candidates.put(targetFields[0], strVal);
 
-            // 派生字段（括号内结论）
             if (targetFields.length > 1) {
                 Optional<String> conclusion = extractParenthesizedConclusion(strVal);
                 if (conclusion.isPresent()) {
@@ -223,6 +243,47 @@ public class FirstAssessmentSourceSelector {
         if (fallback != null && !fallback.trim().isEmpty()) {
             return fallback.trim();
         }
+        return null;
+    }
+
+    /**
+     * 从评估值中只提取数值分数，去除括号及括号中的风险等级/结论。
+     * <p>支持中文括号"（）"和英文括号"()"，支持整数、小数、负数。</p>
+     *
+     * @param value 原始评估值，如 "15（低风险）"、"90(轻度依赖)"、"12 分（高风险）"
+     * @return 纯数字分数字符串，如 "15"、"90"、"12"；无法提取时返回 null
+     */
+    String extractScoreOnly(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+
+        String normalized = value.trim();
+
+        // 去掉第一个括号及其后全部内容
+        int chineseBracket = normalized.indexOf('（'); // （
+        int englishBracket = normalized.indexOf('(');
+
+        int bracketIndex;
+        if (chineseBracket >= 0 && englishBracket >= 0) {
+            bracketIndex = Math.min(chineseBracket, englishBracket);
+        } else if (chineseBracket >= 0) {
+            bracketIndex = chineseBracket;
+        } else {
+            bracketIndex = englishBracket;
+        }
+
+        if (bracketIndex >= 0) {
+            normalized = normalized.substring(0, bracketIndex).trim();
+        }
+
+        // 用正则提取第一个完整数字
+        Matcher matcher = SCORE_PATTERN.matcher(normalized);
+        if (matcher.find()) {
+            return matcher.group();
+        }
+
+        log.warn("[FirstAssessmentSync] 无法从评估值中提取分数，value={}", value);
         return null;
     }
 

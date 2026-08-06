@@ -125,6 +125,70 @@ class FirstAssessmentSourceSelectorTest {
         assertEquals("s2", result.get("p1").getId());
     }
 
+    // ── extractScoreOnly 单元测试 ────────────────────────────────────
+
+    @Test
+    void extractScoreOnly_chineseBracket() {
+        assertEquals("15", selector.extractScoreOnly("15（低风险）"));
+    }
+
+    @Test
+    void extractScoreOnly_englishBracket() {
+        assertEquals("15", selector.extractScoreOnly("15(低风险)"));
+    }
+
+    @Test
+    void extractScoreOnly_barthel() {
+        assertEquals("90", selector.extractScoreOnly("90（轻度依赖）"));
+    }
+
+    @Test
+    void extractScoreOnly_withSpaceAndUnit() {
+        assertEquals("12", selector.extractScoreOnly("12 分（高风险）"));
+    }
+
+    @Test
+    void extractScoreOnly_withUnitNoBracket() {
+        assertEquals("18", selector.extractScoreOnly("18分"));
+    }
+
+    @Test
+    void extractScoreOnly_leadingTrailingSpaces() {
+        assertEquals("20", selector.extractScoreOnly(" 20 （无风险） "));
+    }
+
+    @Test
+    void extractScoreOnly_decimal() {
+        assertEquals("7.5", selector.extractScoreOnly("7.5（风险）"));
+    }
+
+    @Test
+    void extractScoreOnly_emptyString() {
+        assertNull(selector.extractScoreOnly(""));
+    }
+
+    @Test
+    void extractScoreOnly_null() {
+        assertNull(selector.extractScoreOnly(null));
+    }
+
+    @Test
+    void extractScoreOnly_noDigit() {
+        assertNull(selector.extractScoreOnly("低风险"));
+    }
+
+    @Test
+    void extractScoreOnly_onlyBracketContent() {
+        assertNull(selector.extractScoreOnly("（低风险）"));
+    }
+
+    @Test
+    void extractScoreOnly_negativeNumber() {
+        assertEquals("-3", selector.extractScoreOnly("-3（测试）"));
+    }
+
+    // ── buildCandidateValues 测试 ────────────────────────────────────
+
     @Test
     void candidate_ttpfMapping() {
         Bedside teng = buildBedside("p1", "param_tengTong_score", "3",
@@ -136,14 +200,36 @@ class FirstAssessmentSourceSelectorTest {
     }
 
     @Test
-    void candidate_bradenWithConclusion() {
+    void candidate_bradenScoreOnly() {
         Bedside braden = buildBedside("p1", "param_yaChuang_score", "12(高度危险)",
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_yaChuang_score", braden));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
                 "zhuanruhulipinggudan");
-        assertEquals("12(高度危险)", result.get("braden"));
-        assertEquals("高度危险", result.get("branden2"));
+        assertEquals("12", result.get("braden"));
+        assertNull(result.get("branden2"));
+    }
+
+    @Test
+    void candidate_barthelScoreOnly() {
+        Bedside barthel = buildBedside("p1", "param_score_adl", "90（轻度依赖）",
+                parseDate("2026-08-01T11:00:00"), new Date(), "id1");
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", barthel));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
+                "zhuanruhulipinggudan");
+        assertEquals("90", result.get("barthel"));
+        assertNull(result.get("barthel2"));
+    }
+
+    @Test
+    void candidate_dghtScoreOnly() {
+        Bedside dght = buildBedside("p1", "param_score_dght", "8（高风险）",
+                parseDate("2026-08-01T11:00:00"), new Date(), "id1");
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_dght", dght));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
+                "zhuanruhulipinggudan");
+        assertEquals("8", result.get("dght"));
+        assertNull(result.get("dght2"));
     }
 
     @Test
