@@ -112,6 +112,45 @@ public class FirstAdmissionAssessmentSyncProperties {
             }
             return fields;
         }
+
+        /**
+         * 设置 dependencyOptions，处理空值情况。
+         * 当环境变量未设置时，Spring会将占位符解析为空字符串，需要过滤掉空值。
+         */
+        public void setDependencyOptions(Map<String, String> options) {
+            if (options == null) {
+                this.dependencyOptions = new LinkedHashMap<>();
+                return;
+            }
+            // 过滤掉值为空的选项
+            this.dependencyOptions = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : options.entrySet()) {
+                if (StringUtils.hasText(entry.getValue())) {
+                    this.dependencyOptions.put(entry.getKey(), entry.getValue());
+                } else {
+                    log.warn("[FirstAssessmentSync] 过滤空值选项: {} = {}", entry.getKey(), entry.getValue());
+                }
+            }
+        }
+
+        /**
+         * 设置 fallMethodOptions，处理空值情况。
+         */
+        public void setFallMethodOptions(Map<String, String> options) {
+            if (options == null) {
+                this.fallMethodOptions = new LinkedHashMap<>();
+                return;
+            }
+            // 过滤掉值为空的选项
+            this.fallMethodOptions = new LinkedHashMap<>();
+            for (Map.Entry<String, String> entry : options.entrySet()) {
+                if (StringUtils.hasText(entry.getValue())) {
+                    this.fallMethodOptions.put(entry.getKey(), entry.getValue());
+                } else {
+                    log.warn("[FirstAssessmentSync] 过滤空值选项: {} = {}", entry.getKey(), entry.getValue());
+                }
+            }
+        }
     }
 
     // ── 配置校验 ──────────────────────────────────────────────────────
