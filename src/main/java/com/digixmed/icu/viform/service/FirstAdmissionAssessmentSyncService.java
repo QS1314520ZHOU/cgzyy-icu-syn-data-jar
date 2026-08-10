@@ -61,7 +61,7 @@ public class FirstAdmissionAssessmentSyncService {
 
     /** 目标字段白名单（固定顺序） */
     private static final List<String> TARGET_FIELDS = Arrays.asList(
-            "ttpf", "braden", "branden2", "barthel", "barthel2",
+            "ttpf", "braden", "branden2", "shzlnl", "shzlnl1", "shzlnl2", "shzlnl3", "shzlnl4",
             "dght", "dght2", "lcpdf", "mpff", "morde", "morde2"
     );
 

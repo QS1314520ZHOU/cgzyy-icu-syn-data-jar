@@ -28,7 +28,7 @@ public class FirstAssessmentSourceSelector {
     private static final Map<String, String> SCORE_FIELD_MAPPING = new LinkedHashMap<>();
     static {
         SCORE_FIELD_MAPPING.put("param_yaChuang_score", "braden");   // Braden 压疮评分
-        SCORE_FIELD_MAPPING.put("param_score_adl",      "barthel");  // Barthel 日常生活活动
+        SCORE_FIELD_MAPPING.put("param_score_adl",      "shzlnl");   // Barthel 日常生活活动（生活自理能力）
         SCORE_FIELD_MAPPING.put("param_score_dght",     "dght");     // 管道滑脱评估
     }
 
@@ -172,6 +172,18 @@ public class FirstAssessmentSourceSelector {
             String score = extractScoreOnly(source.getStrVal());
             if (score != null && !score.isEmpty()) {
                 candidates.put(entry.getValue(), score);
+            }
+
+            // shzlnl 特殊处理：解析依赖程度（shzlnl1-4）
+            if ("shzlnl".equals(entry.getValue())) {
+                Optional<String> conclusion = extractParenthesizedConclusion(source.getStrVal());
+                if (conclusion.isPresent()) {
+                    String dependency = conclusion.get();
+                    List<String> dependencyFields = resolveDependencyFields(dependency);
+                    if (dependencyFields != null) {
+                        candidates.put(entry.getValue() + "1", dependencyFields);
+                    }
+                }
             }
         }
 
@@ -363,5 +375,32 @@ public class FirstAssessmentSourceSelector {
             }
         }
         return false;
+    }
+
+    /**
+     * 解析依赖程度对应的字段。
+     * <p>根据依赖程度文本返回对应的字段名列表。</p>
+     *
+     * @param dependency 依赖程度文本，如 "无依赖"、"轻度依赖"、"中度依赖"、"重度依赖"
+     * @return 对应的字段名列表，如 ["shzlnl2"]；无法解析时返回 null
+     */
+    private List<String> resolveDependencyFields(String dependency) {
+        if (dependency == null) return null;
+
+        String trimmed = dependency.trim();
+
+        // 根据依赖程度返回对应的字段名
+        if ("无依赖".equals(trimmed)) {
+            return Collections.singletonList("shzlnl1");
+        } else if ("轻度依赖".equals(trimmed)) {
+            return Collections.singletonList("shzlnl2");
+        } else if ("中度依赖".equals(trimmed)) {
+            return Collections.singletonList("shzlnl3");
+        } else if ("重度依赖".equals(trimmed)) {
+            return Collections.singletonList("shzlnl4");
+        }
+
+        log.warn("[FirstAssessmentSync] 无法解析依赖程度: {}", trimmed);
+        return null;
     }
 }
