@@ -154,31 +154,31 @@ first-assessment-sync:
   form-option-configs:
     ruyuanhulipinggudan:
       # 生活自理能力字段编码（从目标表单定义确认）
-      dependency-field: ${RUYUAN_DEPENDENCY_FIELD:shzlnl}
+      dependency-field: shzlnl
       # 依赖程度中文名称 → 数据库真实 option value
       dependency-options:
-        无依赖: ${RUYUAN_DEP_OPT_NONE:shzlnl1}
-        轻度依赖: ${RUYUAN_DEP_OPT_MILD:shzlnl2}
-        中度依赖: ${RUYUAN_DEP_OPT_MODERATE:shzlnl3}
-        重度依赖: ${RUYUAN_DEP_OPT_SEVERE:shzlnl4}
+        无依赖: shzlnl1
+        轻度依赖: shzlnl2
+        中度依赖: shzlnl3
+        重度依赖: shzlnl4
       # 跌倒评估方法字段编码（临床判定法+Morse合并写入此字段）
-      fall-method-field: ${RUYUAN_FALL_METHOD_FIELD:lcpdf}
+      fall-method-field: lcpdf
       # 跌倒评估方法中文名称 → 数据库真实 option value
       fall-method-options:
-        临床判定法: ${RUYUAN_FALL_OPT_CLINICAL:clinicalJudgment}
-        Morse评分量表: ${RUYUAN_FALL_OPT_MORSE:morseScale}
+        临床判定法: clinicalJudgment
+        Morse评分量表: morseScale
 
     zhuanruhulipinggudan:
-      dependency-field: ${ZHUANRU_DEPENDENCY_FIELD:shzlnl}
+      dependency-field: shzlnl
       dependency-options:
-        无依赖: ${ZHUANRU_DEP_OPT_NONE:shzlnl1}
-        轻度依赖: ${ZHUANRU_DEP_OPT_MILD:shzlnl2}
-        中度依赖: ${ZHUANRU_DEP_OPT_MODERATE:shzlnl3}
-        重度依赖: ${ZHUANRU_DEP_OPT_SEVERE:shzlnl4}
-      fall-method-field: ${ZHUANRU_FALL_METHOD_FIELD:lcpdf}
+        无依赖: shzlnl1
+        轻度依赖: shzlnl2
+        中度依赖: shzlnl3
+        重度依赖: shzlnl4
+      fall-method-field: lcpdf
       fall-method-options:
-        临床判定法: ${ZHUANRU_FALL_OPT_CLINICAL:clinicalJudgment}
-        Morse评分量表: ${ZHUANRU_FALL_OPT_MORSE:morseScale}
+        临床判定法: clinicalJudgment
+        Morse评分量表: morseScale
 
 # ===================================================================
 # 医嘱驱动 bedside 同步配置（param_biSiLiquid 鼻饲液）
