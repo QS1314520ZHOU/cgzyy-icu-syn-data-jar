@@ -178,6 +178,21 @@ public class FirstAssessmentSourceSelector {
             if (score != null && !score.isEmpty()) {
                 candidates.put(entry.getValue(), score);
             }
+
+            // shzlnl 特殊处理：解析依赖程度（shzlnl1-4）
+            if ("shzlnl".equals(entry.getValue())) {
+                Optional<String> conclusion = extractParenthesizedConclusion(source.getStrVal());
+                if (conclusion.isPresent()) {
+                    String dependency = conclusion.get();
+                    List<String> dependencyFields = resolveDependencyFields(dependency);
+                    if (dependencyFields != null) {
+                        // 将字段名作为key，依赖程度文本作为value（List<String>格式）
+                        for (String field : dependencyFields) {
+                            candidates.put(field, Collections.singletonList(dependency));
+                        }
+                    }
+                }
+            }
         }
 
         // 1b. bedside 映射：BEDSIDE_CODE_MAPPING（ttpf 等，保留原有逻辑）
