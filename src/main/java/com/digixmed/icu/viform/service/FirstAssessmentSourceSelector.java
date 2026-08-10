@@ -1,11 +1,13 @@
 package com.digixmed.icu.viform.service;
 
 import com.digixmed.icu.viform.config.FirstAdmissionAssessmentSyncProperties;
+import com.digixmed.icu.viform.config.FirstAdmissionAssessmentSyncProperties.FormOptionConfig;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.entity.Score;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
 
 import java.util.*;
 import java.util.regex.Matcher;
@@ -16,6 +18,9 @@ import java.util.stream.Collectors;
  * 从 bedside/score 中选择入科后第一次有效评估的逻辑。
  *
  * <p>按 (pid, code) 分组后取 time 升序第一条。</p>
+ *
+ * <p>选择类字段（生活自理能力、跌倒评估方法）的字段编码和选项编码
+ * 完全由配置驱动，不允许猜测或硬编码。</p>
  */
 @Slf4j
 @Component
@@ -41,9 +46,6 @@ public class FirstAssessmentSourceSelector {
     static {
         BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpf"});
     }
-
-    /** mpff 固定值（Morse 评分方法） */
-    private static final String MORSE_METHOD_VALUE = "Mordepingfenfa";
 
     private final FirstAdmissionAssessmentSyncProperties properties;
 
@@ -154,7 +156,7 @@ public class FirstAssessmentSourceSelector {
      * @param pid        患者 ID
      * @param bedsideMap pid → code → 第一次有效 bedside
      * @param scoreMap   pid → 第一次有效 score
-     * @param formCode   当前处理的表单编码（用于 lcpdf 编码查找）
+     * @param formCode   当前处理的表单编码（用于按 formCode 查找字段/选项编码）
      * @return 目标字段 → 候选值
      */
     public Map<String, Object> buildCandidateValues(String pid,
@@ -162,6 +164,9 @@ public class FirstAssessmentSourceSelector {
                                                      Map<String, Score> scoreMap,
                                                      String formCode) {
         Map<String, Object> candidates = new LinkedHashMap<>();
+
+        // 获取当前 formCode 的选项配置
+        FormOptionConfig optionConfig = getFormOptionConfig(formCode);
 
         // 1a. bedside 映射：SCORE_FIELD_MAPPING（只取数值分数，不含括号结论）
         Map<String, Bedside> pidBedside = bedsideMap.getOrDefault(pid, Collections.emptyMap());
@@ -172,18 +177,6 @@ public class FirstAssessmentSourceSelector {
             String score = extractScoreOnly(source.getStrVal());
             if (score != null && !score.isEmpty()) {
                 candidates.put(entry.getValue(), score);
-            }
-
-            // shzlnl 特殊处理：解析依赖程度（shzlnl1-4）
-            if ("shzlnl".equals(entry.getValue())) {
-                Optional<String> conclusion = extractParenthesizedConclusion(source.getStrVal());
-                if (conclusion.isPresent()) {
-                    String dependency = conclusion.get();
-                    List<String> dependencyFields = resolveDependencyFields(dependency);
-                    if (dependencyFields != null) {
-                        candidates.put(entry.getValue() + "1", dependencyFields);
-                    }
-                }
             }
         }
 
@@ -205,6 +198,12 @@ public class FirstAssessmentSourceSelector {
             }
         }
 
+        // 1c. 生活自理能力：根据依赖程度写入选项编码（List<String>）
+        Bedside adlSource = pidBedside.get("param_score_adl");
+        if (adlSource != null && optionConfig != null) {
+            resolveAndPutDependencyOption(formCode, adlSource.getStrVal(), candidates);
+        }
+
         // 2. score 映射（跌倒/坠床）
         Score score = scoreMap.get(pid);
         if (score != null) {
@@ -217,46 +216,154 @@ public class FirstAssessmentSourceSelector {
                 candidates.put("morde2", score.getConclusion().trim());
             }
 
-            // 临床判定法 → lcpdf (List<String>)，按 formCode 分别配置
-            boolean clinicalUsed = isClinicalJudgmentUsed(score);
-            if (clinicalUsed) {
-                String clinicalValue = resolveClinicalMethodValue(formCode);
-                if (clinicalValue == null) {
-                    log.warn("[FirstAssessmentSync] clinical-method-values 未配置 formCode={}，跳过 lcpdf", formCode);
-                } else {
-                    candidates.put("lcpdf", Collections.singletonList(clinicalValue));
-                }
-            }
-
-            // Morse 评分量表 → mpff (List<String>)
-            boolean morseUsed = isMorseUsed(score);
-            if (morseUsed) {
-                candidates.put("mpff", Collections.singletonList(MORSE_METHOD_VALUE));
+            // 跌倒评估方法：收集所有适用方法的 option value 到同一个 List
+            if (optionConfig != null) {
+                collectFallMethodOptions(formCode, score, candidates);
             }
         }
 
         return candidates;
     }
 
-    // ==================== 内部工具 ====================
+    // ==================== 选项解析 ====================
 
     /**
-     * 按 formCode 解析临床判定法选项编码。
-     * <p>优先查 Map；fallback 查旧字段 clinicalMethodValue。</p>
+     * 解析生活自理能力的依赖程度，写入配置的字段和选项编码。
+     *
+     * @param formCode    表单编码
+     * @param strVal      bedside 原始值，如 "90（轻度依赖）"
+     * @param candidates  候选值 map
      */
-    private String resolveClinicalMethodValue(String formCode) {
-        Map<String, String> values = properties.getClinicalMethodValues();
-        if (values != null && values.containsKey(formCode)) {
-            String v = values.get(formCode);
-            if (v != null && !v.trim().isEmpty()) return v.trim();
+    private void resolveAndPutDependencyOption(String formCode, String strVal,
+                                                Map<String, Object> candidates) {
+        if (!StringUtils.hasText(strVal)) return;
+
+        Optional<String> conclusion = extractParenthesizedConclusion(strVal);
+        if (!conclusion.isPresent()) return;
+
+        String chineseLabel = conclusion.get().trim();
+        String optionValue = resolveDependencyOptionValue(formCode, chineseLabel);
+
+        if (!StringUtils.hasText(optionValue)) {
+            log.warn("[FirstAssessmentSync] formCode={} 依赖程度选项 '{}' 编码未配置或为空，跳过",
+                    formCode, chineseLabel);
+            return;
         }
-        // fallback: 旧配置
-        String fallback = properties.getClinicalMethodValue();
-        if (fallback != null && !fallback.trim().isEmpty()) {
-            return fallback.trim();
+
+        String targetField = getDependencyField(formCode);
+        if (!StringUtils.hasText(targetField)) {
+            log.warn("[FirstAssessmentSync] formCode={} dependencyField 未配置，跳过依赖程度同步", formCode);
+            return;
         }
-        return null;
+
+        candidates.put(targetField, Collections.singletonList(optionValue));
     }
+
+    /**
+     * 收集跌倒评估方法的所有适用 option value，合并写入同一个字段（List）。
+     *
+     * @param formCode    表单编码
+     * @param score       score 记录
+     * @param candidates  候选值 map
+     */
+    private void collectFallMethodOptions(String formCode, Score score,
+                                           Map<String, Object> candidates) {
+        List<String> methodValues = new ArrayList<>();
+
+        // 临床判定法
+        if (isClinicalJudgmentUsed(score)) {
+            String clinicalValue = resolveFallMethodOptionValue(formCode, "临床判定法");
+            if (StringUtils.hasText(clinicalValue)) {
+                methodValues.add(clinicalValue);
+            } else {
+                log.warn("[FirstAssessmentSync] formCode={} 临床判定法选项编码未配置，跳过", formCode);
+            }
+        }
+
+        // Morse 评分量表
+        if (isMorseUsed(score)) {
+            String morseValue = resolveFallMethodOptionValue(formCode, "Morse评分量表");
+            if (StringUtils.hasText(morseValue)) {
+                methodValues.add(morseValue);
+            } else {
+                log.warn("[FirstAssessmentSync] formCode={} Morse评分量表选项编码未配置，跳过", formCode);
+            }
+        }
+
+        if (!methodValues.isEmpty()) {
+            List<String> fallMethodFields = getFallMethodFields(formCode);
+            if (!fallMethodFields.isEmpty()) {
+                // 写入第一个字段（多字段场景下后续字段可扩展）
+                candidates.put(fallMethodFields.get(0), methodValues);
+            } else {
+                log.warn("[FirstAssessmentSync] formCode={} fallMethodField 未配置，跳过跌倒评估方法同步", formCode);
+            }
+        }
+    }
+
+    // ==================== 配置查询 ====================
+
+    /**
+     * 获取指定 formCode 的选项配置。
+     */
+    FormOptionConfig getFormOptionConfig(String formCode) {
+        if (properties.getFormOptionConfigs() == null) return null;
+        return properties.getFormOptionConfigs().get(formCode);
+    }
+
+    /**
+     * 获取生活自理能力字段编码。
+     */
+    private String getDependencyField(String formCode) {
+        FormOptionConfig config = getFormOptionConfig(formCode);
+        return config != null ? config.getDependencyField() : null;
+    }
+
+    /**
+     * 获取跌倒评估方法字段编码列表。
+     */
+    private List<String> getFallMethodFields(String formCode) {
+        FormOptionConfig config = getFormOptionConfig(formCode);
+        return config != null ? config.getFallMethodFieldList() : Collections.emptyList();
+    }
+
+    /**
+     * 解析生活自理能力选项：中文名称 → 数据库 option value。
+     */
+    String resolveDependencyOptionValue(String formCode, String chineseLabel) {
+        if (!StringUtils.hasText(chineseLabel)) return null;
+
+        FormOptionConfig config = getFormOptionConfig(formCode);
+        if (config == null || config.getDependencyOptions() == null) return null;
+
+        String value = config.getDependencyOptions().get(chineseLabel.trim());
+        if (!StringUtils.hasText(value)) {
+            log.warn("[FirstAssessmentSync] formCode={} 依赖程度选项 '{}' 无对应编码配置",
+                    formCode, chineseLabel);
+            return null;
+        }
+        return value.trim();
+    }
+
+    /**
+     * 解析跌倒评估方法选项：中文名称 → 数据库 option value。
+     */
+    String resolveFallMethodOptionValue(String formCode, String chineseLabel) {
+        if (!StringUtils.hasText(chineseLabel)) return null;
+
+        FormOptionConfig config = getFormOptionConfig(formCode);
+        if (config == null || config.getFallMethodOptions() == null) return null;
+
+        String value = config.getFallMethodOptions().get(chineseLabel.trim());
+        if (!StringUtils.hasText(value)) {
+            log.warn("[FirstAssessmentSync] formCode={} 跌倒评估方法选项 '{}' 无对应编码配置",
+                    formCode, chineseLabel);
+            return null;
+        }
+        return value.trim();
+    }
+
+    // ==================== 内部工具 ====================
 
     /**
      * 从评估值中只提取数值分数，去除括号及括号中的风险等级/结论。
@@ -273,7 +380,7 @@ public class FirstAssessmentSourceSelector {
         String normalized = value.trim();
 
         // 去掉第一个括号及其后全部内容
-        int chineseBracket = normalized.indexOf('（'); // （
+        int chineseBracket = normalized.indexOf('（');
         int englishBracket = normalized.indexOf('(');
 
         int bracketIndex;
@@ -299,7 +406,7 @@ public class FirstAssessmentSourceSelector {
         return null;
     }
 
-    private Optional<String> extractParenthesizedConclusion(String value) {
+    Optional<String> extractParenthesizedConclusion(String value) {
         if (value == null) return Optional.empty();
         java.util.regex.Matcher m =
                 java.util.regex.Pattern.compile("[（(]\\s*(.+?)\\s*[）)]").matcher(value.trim());
@@ -375,32 +482,5 @@ public class FirstAssessmentSourceSelector {
             }
         }
         return false;
-    }
-
-    /**
-     * 解析依赖程度对应的字段。
-     * <p>根据依赖程度文本返回对应的字段名列表。</p>
-     *
-     * @param dependency 依赖程度文本，如 "无依赖"、"轻度依赖"、"中度依赖"、"重度依赖"
-     * @return 对应的字段名列表，如 ["shzlnl2"]；无法解析时返回 null
-     */
-    private List<String> resolveDependencyFields(String dependency) {
-        if (dependency == null) return null;
-
-        String trimmed = dependency.trim();
-
-        // 根据依赖程度返回对应的字段名
-        if ("无依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl1");
-        } else if ("轻度依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl2");
-        } else if ("中度依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl3");
-        } else if ("重度依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl4");
-        }
-
-        log.warn("[FirstAssessmentSync] 无法解析依赖程度: {}", trimmed);
-        return null;
     }
 }

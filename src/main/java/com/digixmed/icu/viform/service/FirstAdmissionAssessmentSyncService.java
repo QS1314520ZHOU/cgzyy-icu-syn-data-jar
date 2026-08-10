@@ -1,6 +1,7 @@
 package com.digixmed.icu.viform.service;
 
 import com.digixmed.icu.viform.config.FirstAdmissionAssessmentSyncProperties;
+import com.digixmed.icu.viform.config.FirstAdmissionAssessmentSyncProperties.FormOptionConfig;
 import com.digixmed.icu.viform.entity.*;
 import com.digixmed.icu.viform.repository.smartcare.BedsideRepository;
 import com.digixmed.icu.viform.repository.smartcare.DFormDataRepository;
@@ -53,23 +54,53 @@ public class FirstAdmissionAssessmentSyncService {
     /** 防重入锁 */
     private final AtomicBoolean running = new AtomicBoolean(false);
 
+    /** 配置校验标记（只执行一次） */
+    private volatile boolean configValidated = false;
+
     /** 在院状态常量 */
     private static final String STATUS_ADMITTED = "admitted";
 
     /** 表单有效状态 */
     private static final String FORM_VALID = "valid";
 
-    /** 目标字段白名单（固定顺序） */
-    private static final List<String> TARGET_FIELDS = Arrays.asList(
-            "ttpf", "braden", "branden2", "shzlnl", "shzlnl1", "shzlnl2", "shzlnl3", "shzlnl4",
-            "dght", "dght2", "lcpdf", "mpff", "morde", "morde2"
+    /**
+     * 基础目标字段（固定不变的字段）。
+     * <p>选择类字段（依赖程度、跌倒评估方法）从配置动态获取，不再硬编码。</p>
+     */
+    private static final List<String> BASE_TARGET_FIELDS = Arrays.asList(
+            "ttpf", "braden", "shzlnl", "dght",
+            "morde", "morde2"
     );
 
-    /** 目标表单编码 */
-    private static final List<String> TARGET_FORM_CODES = Arrays.asList(
-            "zhuanruhulipinggudan",
-            "ruyuanhulipinggudan"
-    );
+    /**
+     * 获取所有允许写入的目标字段（基础字段 + 配置的字段）。
+     * <p>防止真实字段不在白名单中无法创建，也防止错误字段继续被写入。</p>
+     */
+    private List<String> getEffectiveTargetFields() {
+        Set<String> fields = new LinkedHashSet<>(BASE_TARGET_FIELDS);
+        if (properties.getFormOptionConfigs() != null) {
+            for (FormOptionConfig config : properties.getFormOptionConfigs().values()) {
+                if (config == null) continue;
+                if (StringUtils.hasText(config.getDependencyField())) {
+                    fields.add(config.getDependencyField());
+                }
+                if (StringUtils.hasText(config.getFallMethodField())) {
+                    for (String f : config.getFallMethodFieldList()) {
+                        fields.add(f);
+                    }
+                }
+            }
+        }
+        return new ArrayList<>(fields);
+    }
+
+    /** 目标表单编码（从配置读取） */
+    private List<String> getTargetFormCodes() {
+        if (properties.getFormCodes() != null && !properties.getFormCodes().isEmpty()) {
+            return properties.getFormCodes();
+        }
+        return Arrays.asList("zhuanruhulipinggudan", "ruyuanhulipinggudan");
+    }
 
     /** 变更记录 */
     public static class FieldChange {
@@ -150,6 +181,12 @@ public class FirstAdmissionAssessmentSyncService {
         AtomicInteger updatedFields = new AtomicInteger();
 
         try {
+            // 0. 配置校验（首次执行时）
+            if (!configValidated) {
+                properties.validate();
+                configValidated = true;
+            }
+
             // 1. 批量查询在院患者
             List<Patient> patients = patientRepository.findByStatus(STATUS_ADMITTED);
             patients = patients.stream()
@@ -188,7 +225,7 @@ public class FirstAdmissionAssessmentSyncService {
 
             // 4. 批量查询 dFormData（两个 formCode）
             List<DFormData> allForms = dFormDataRepository.findByPidInAndStatusAndFormCodeIn(
-                    pids, FORM_VALID, TARGET_FORM_CODES);
+                    pids, FORM_VALID, getTargetFormCodes());
             log.info("[FirstAssessmentSync] dFormData 命中: {} 条", allForms.size());
 
             // 按 pid 分组
@@ -209,7 +246,7 @@ public class FirstAdmissionAssessmentSyncService {
                 List<DFormData> patientForms = formsByPid.getOrDefault(pid, Collections.emptyList());
 
                 // 6. 对两个 formCode 分别处理（lcpdf 可能按 formCode 不同，需分别构建）
-                for (String formCode : TARGET_FORM_CODES) {
+                for (String formCode : getTargetFormCodes()) {
                     totalForms.incrementAndGet();
                     try {
                         // 构建候选值（传入 formCode 以获取正确的 lcpdf 编码）
@@ -313,7 +350,7 @@ public class FirstAdmissionAssessmentSyncService {
      */
     private List<Document> buildMongoFieldDataList(Map<String, Object> candidateValues) {
         List<Document> result = new ArrayList<>();
-        for (String field : TARGET_FIELDS) {
+        for (String field : getEffectiveTargetFields()) {
             Object value = candidateValues.get(field);
             if (isEmptySourceValue(value)) {
                 continue;
@@ -402,7 +439,7 @@ public class FirstAdmissionAssessmentSyncService {
 
         List<FieldChange> changes = new ArrayList<>();
 
-        for (String field : TARGET_FIELDS) {
+        for (String field : getEffectiveTargetFields()) {
             Object sourceValue = candidateValues.get(field);
             if (isEmptySourceValue(sourceValue)) {
                 continue;
