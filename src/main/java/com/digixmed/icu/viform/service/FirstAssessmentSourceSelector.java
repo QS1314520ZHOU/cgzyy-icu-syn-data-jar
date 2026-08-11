@@ -230,7 +230,7 @@ public class FirstAssessmentSourceSelector {
                 candidates.put("morde2", score.getConclusion().trim());
             }
 
-            // 跌倒评估方法：收集所有适用方法的 option value 到同一个 List
+            // 跌倒评估方法：收集所有适用方法的 option value
             if (optionConfig != null) {
                 collectFallMethodOptions(formCode, score, candidates);
             }
