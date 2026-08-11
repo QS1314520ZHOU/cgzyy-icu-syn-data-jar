@@ -68,8 +68,8 @@ public class FirstAdmissionAssessmentSyncService {
      * <p>选择类字段（依赖程度、跌倒评估方法）从配置动态获取，不再硬编码。</p>
      */
     private static final List<String> BASE_TARGET_FIELDS = Arrays.asList(
-            "ttpf", "braden", "shzlnl", "dght",
-            "morde", "morde2"
+            "ttpf", "braden", "branden2", "shzlnl", "shzlnl1", "shzlnl2", "shzlnl3", "shzlnl4",
+            "dght", "morde", "morde2"
     );
 
     /**

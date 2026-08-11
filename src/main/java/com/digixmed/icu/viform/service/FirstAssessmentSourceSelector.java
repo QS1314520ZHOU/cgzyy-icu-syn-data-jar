@@ -179,18 +179,11 @@ public class FirstAssessmentSourceSelector {
                 candidates.put(entry.getValue(), score);
             }
 
-            // shzlnl 特殊处理：解析依赖程度（shzlnl1-4）
-            if ("shzlnl".equals(entry.getValue())) {
+            // param_yaChuang_score 特殊处理：截取括号内容赋值给 branden2
+            if ("param_yaChuang_score".equals(entry.getKey())) {
                 Optional<String> conclusion = extractParenthesizedConclusion(source.getStrVal());
                 if (conclusion.isPresent()) {
-                    String dependency = conclusion.get();
-                    List<String> dependencyFields = resolveDependencyFields(dependency);
-                    if (dependencyFields != null) {
-                        // 将字段名作为key，依赖程度文本作为value（List<String>格式）
-                        for (String field : dependencyFields) {
-                            candidates.put(field, Collections.singletonList(dependency));
-                        }
-                    }
+                    candidates.put("branden2", conclusion.get());
                 }
             }
         }
@@ -257,21 +250,42 @@ public class FirstAssessmentSourceSelector {
         if (!conclusion.isPresent()) return;
 
         String chineseLabel = conclusion.get().trim();
-        String optionValue = resolveDependencyOptionValue(formCode, chineseLabel);
 
-        if (!StringUtils.hasText(optionValue)) {
-            log.warn("[FirstAssessmentSync] formCode={} 依赖程度选项 '{}' 编码未配置或为空，跳过",
+        // 根据中文标签确定目标字段和拼音编码值
+        Map.Entry<String, String> fieldAndValue = resolveDependencyFieldAndValue(chineseLabel);
+        if (fieldAndValue == null) {
+            log.warn("[FirstAssessmentSync] formCode={} 依赖程度 '{}' 无法映射为目标字段，跳过",
                     formCode, chineseLabel);
             return;
         }
 
-        String targetField = getDependencyField(formCode);
-        if (!StringUtils.hasText(targetField)) {
-            log.warn("[FirstAssessmentSync] formCode={} dependencyField 未配置，跳过依赖程度同步", formCode);
-            return;
+        // 写入选中字段（List<String>格式，与 lcpdf 一致）
+        candidates.put(fieldAndValue.getKey(), Collections.singletonList(fieldAndValue.getValue()));
+    }
+
+    /**
+     * 根据依赖程度中文标签确定目标字段和拼音编码值。
+     *
+     * @param chineseLabel 中文标签，如 "无依赖"、"轻度依赖"、"中度依赖"、"重度依赖"
+     * @return Map.Entry<字段名, 拼音编码>；无法解析时返回 null
+     */
+    private Map.Entry<String, String> resolveDependencyFieldAndValue(String chineseLabel) {
+        if (chineseLabel == null) return null;
+
+        String trimmed = chineseLabel.trim();
+
+        if ("无依赖".equals(trimmed)) {
+            return new AbstractMap.SimpleEntry<>("shzlnl1", "wuyilai");
+        } else if ("轻度依赖".equals(trimmed)) {
+            return new AbstractMap.SimpleEntry<>("shzlnl2", "qingduyilai");
+        } else if ("中度依赖".equals(trimmed)) {
+            return new AbstractMap.SimpleEntry<>("shzlnl3", "zhongduyilai");
+        } else if ("重度依赖".equals(trimmed)) {
+            return new AbstractMap.SimpleEntry<>("shzlnl4", "zhongduyilai");
         }
 
-        candidates.put(targetField, Collections.singletonList(optionValue));
+        log.warn("[FirstAssessmentSync] 无法解析依赖程度: {}", trimmed);
+        return null;
     }
 
     /**
@@ -324,14 +338,6 @@ public class FirstAssessmentSourceSelector {
     FormOptionConfig getFormOptionConfig(String formCode) {
         if (properties.getFormOptionConfigs() == null) return null;
         return properties.getFormOptionConfigs().get(formCode);
-    }
-
-    /**
-     * 获取生活自理能力字段编码。
-     */
-    private String getDependencyField(String formCode) {
-        FormOptionConfig config = getFormOptionConfig(formCode);
-        return config != null ? config.getDependencyField() : null;
     }
 
     /**
@@ -535,32 +541,5 @@ public class FirstAssessmentSourceSelector {
             }
         }
         return false;
-    }
-
-    /**
-     * 解析依赖程度对应的字段。
-     * <p>根据依赖程度文本返回对应的字段名列表。</p>
-     *
-     * @param dependency 依赖程度文本，如 "无依赖"、"轻度依赖"、"中度依赖"、"重度依赖"
-     * @return 对应的字段名列表，如 ["shzlnl2"]；无法解析时返回 null
-     */
-    private List<String> resolveDependencyFields(String dependency) {
-        if (dependency == null) return null;
-
-        String trimmed = dependency.trim();
-
-        // 根据依赖程度返回对应的字段名
-        if ("无依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl1");
-        } else if ("轻度依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl2");
-        } else if ("中度依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl3");
-        } else if ("重度依赖".equals(trimmed)) {
-            return Collections.singletonList("shzlnl4");
-        }
-
-        log.warn("[FirstAssessmentSync] 无法解析依赖程度: {}", trimmed);
-        return null;
     }
 }
