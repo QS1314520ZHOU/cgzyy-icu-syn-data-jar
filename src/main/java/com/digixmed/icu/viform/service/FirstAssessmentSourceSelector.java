@@ -78,14 +78,17 @@ public class FirstAssessmentSourceSelector {
 
             Map<String, Bedside> codeToFirst = new HashMap<>();
 
+            // 允许入科前1小时内的评估（整点评估场景，如15:16入科，15:00评估）
+            Date adjustedAdmissionTime = new Date(admissionTime.getTime() - 60 * 60 * 1000);
+
             for (Map.Entry<String, List<Bedside>> codeEntry : pidEntry.getValue().entrySet()) {
                 String code = codeEntry.getKey();
 
-                // 筛选有效记录：valid=true, strVal非空, time >= icuAdmissionTime
+                // 筛选有效记录：valid=true, strVal非空, time >= 入科前1小时
                 List<Bedside> validList = codeEntry.getValue().stream()
                         .filter(b -> Boolean.TRUE.equals(b.getValid()))
                         .filter(b -> b.getStrVal() != null && !b.getStrVal().trim().isEmpty())
-                        .filter(b -> b.getTime() != null && !b.getTime().before(admissionTime))
+                        .filter(b -> b.getTime() != null && !b.getTime().before(adjustedAdmissionTime))
                         .collect(Collectors.toList());
 
                 if (validList.isEmpty()) continue;
@@ -131,10 +134,13 @@ public class FirstAssessmentSourceSelector {
             Date admissionTime = icuAdmissionTimes.get(pid);
             if (admissionTime == null) continue;
 
-            // 筛选有效记录：valid=true, time >= icuAdmissionTime
+            // 允许入科前1小时内的评估（整点评估场景）
+            Date adjustedAdmissionTime = new Date(admissionTime.getTime() - 60 * 60 * 1000);
+
+            // 筛选有效记录：valid=true, time >= 入科前1小时
             List<Score> validList = entry.getValue().stream()
                     .filter(s -> Boolean.TRUE.equals(s.getValid()))
-                    .filter(s -> s.getTime() != null && !s.getTime().before(admissionTime))
+                    .filter(s -> s.getTime() != null && !s.getTime().before(adjustedAdmissionTime))
                     .collect(Collectors.toList());
 
             if (validList.isEmpty()) continue;
