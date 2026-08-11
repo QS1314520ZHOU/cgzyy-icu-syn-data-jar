@@ -351,7 +351,15 @@ public class FirstAssessmentSourceSelector {
         FormOptionConfig config = getFormOptionConfig(formCode);
         if (config == null || config.getDependencyOptions() == null) return null;
 
-        String value = config.getDependencyOptions().get(chineseLabel.trim());
+        // 中文key → 英文key映射
+        String englishKey = mapChineseToEnglishKey(chineseLabel.trim(), "dependency");
+        if (englishKey == null) {
+            log.warn("[FirstAssessmentSync] formCode={} 依赖程度选项 '{}' 无法映射为英文key",
+                    formCode, chineseLabel);
+            return null;
+        }
+
+        String value = config.getDependencyOptions().get(englishKey);
         if (!StringUtils.hasText(value)) {
             log.warn("[FirstAssessmentSync] formCode={} 依赖程度选项 '{}' 无对应编码配置",
                     formCode, chineseLabel);
@@ -369,13 +377,43 @@ public class FirstAssessmentSourceSelector {
         FormOptionConfig config = getFormOptionConfig(formCode);
         if (config == null || config.getFallMethodOptions() == null) return null;
 
-        String value = config.getFallMethodOptions().get(chineseLabel.trim());
+        // 中文key → 英文key映射
+        String englishKey = mapChineseToEnglishKey(chineseLabel.trim(), "fallMethod");
+        if (englishKey == null) {
+            log.warn("[FirstAssessmentSync] formCode={} 跌倒评估方法选项 '{}' 无法映射为英文key",
+                    formCode, chineseLabel);
+            return null;
+        }
+
+        String value = config.getFallMethodOptions().get(englishKey);
         if (!StringUtils.hasText(value)) {
             log.warn("[FirstAssessmentSync] formCode={} 跌倒评估方法选项 '{}' 无对应编码配置",
                     formCode, chineseLabel);
             return null;
         }
         return value.trim();
+    }
+
+    /**
+     * 中文key → 英文key映射。
+     */
+    private String mapChineseToEnglishKey(String chineseLabel, String type) {
+        if ("dependency".equals(type)) {
+            switch (chineseLabel) {
+                case "无依赖": return "NONE";
+                case "轻度依赖": return "MILD";
+                case "中度依赖": return "MODERATE";
+                case "重度依赖": return "SEVERE";
+                default: return null;
+            }
+        } else if ("fallMethod".equals(type)) {
+            switch (chineseLabel) {
+                case "临床判定法": return "CLINICAL";
+                case "Morse评分量表": return "MORSE";
+                default: return null;
+            }
+        }
+        return null;
     }
 
     // ==================== 内部工具 ====================
