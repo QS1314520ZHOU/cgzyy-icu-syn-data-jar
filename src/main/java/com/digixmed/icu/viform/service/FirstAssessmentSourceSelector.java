@@ -295,7 +295,7 @@ public class FirstAssessmentSourceSelector {
     }
 
     /**
-     * 收集跌倒评估方法的所有适用 option value，合并写入同一个字段（List）。
+     * 收集跌倒评估方法的所有适用 option value，分别写入对应字段。
      *
      * @param formCode    表单编码
      * @param score       score 记录
@@ -303,35 +303,31 @@ public class FirstAssessmentSourceSelector {
      */
     private void collectFallMethodOptions(String formCode, Score score,
                                            Map<String, Object> candidates) {
-        List<String> methodValues = new ArrayList<>();
+        List<String> fallMethodFields = getFallMethodFields(formCode);
+        if (fallMethodFields.isEmpty()) {
+            log.warn("[FirstAssessmentSync] formCode={} fallMethodField 未配置，跳过跌倒评估方法同步", formCode);
+            return;
+        }
 
-        // 临床判定法
+        // 临床判定法 → 第一个字段 (lcpdf)
         if (isClinicalJudgmentUsed(score)) {
             String clinicalValue = resolveFallMethodOptionValue(formCode, "临床判定法");
             if (StringUtils.hasText(clinicalValue)) {
-                methodValues.add(clinicalValue);
+                candidates.put(fallMethodFields.get(0), Collections.singletonList(clinicalValue));
             } else {
                 log.warn("[FirstAssessmentSync] formCode={} 临床判定法选项编码未配置，跳过", formCode);
             }
         }
 
-        // Morse 评分量表
+        // Morse 评分量表 → 第二个字段 (mpff)
         if (isMorseUsed(score)) {
             String morseValue = resolveFallMethodOptionValue(formCode, "Morse评分量表");
-            if (StringUtils.hasText(morseValue)) {
-                methodValues.add(morseValue);
-            } else {
+            if (StringUtils.hasText(morseValue) && fallMethodFields.size() > 1) {
+                candidates.put(fallMethodFields.get(1), Collections.singletonList(morseValue));
+            } else if (!StringUtils.hasText(morseValue)) {
                 log.warn("[FirstAssessmentSync] formCode={} Morse评分量表选项编码未配置，跳过", formCode);
-            }
-        }
-
-        if (!methodValues.isEmpty()) {
-            List<String> fallMethodFields = getFallMethodFields(formCode);
-            if (!fallMethodFields.isEmpty()) {
-                // 写入第一个字段（多字段场景下后续字段可扩展）
-                candidates.put(fallMethodFields.get(0), methodValues);
             } else {
-                log.warn("[FirstAssessmentSync] formCode={} fallMethodField 未配置，跳过跌倒评估方法同步", formCode);
+                log.warn("[FirstAssessmentSync] formCode={} fallMethodField 只配置了1个字段，无法写入Morse评分法", formCode);
             }
         }
     }
