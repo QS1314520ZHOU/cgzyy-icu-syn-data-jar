@@ -34,7 +34,7 @@ public class FirstAssessmentSourceSelector {
     static {
         SCORE_FIELD_MAPPING.put("param_yaChuang_score", "braden");   // Braden 压疮评分
         SCORE_FIELD_MAPPING.put("param_score_adl",      "shzlnl");   // Barthel 日常生活活动（生活自理能力）
-        SCORE_FIELD_MAPPING.put("param_score_dght",     "dght");     // 管道滑脱评估
+        SCORE_FIELD_MAPPING.put("param_score_unPlannedCGZYY",     "dght");     // 管道滑脱评估
     }
 
     /** 匹配数字（整数、小数、负数） */
