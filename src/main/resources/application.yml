@@ -145,7 +145,7 @@ first-assessment-sync:
     - param_tengTong_score
     - param_yaChuang_score
     - param_score_adl
-    - param_score_dght
+    - param_score_unPlannedCGZYY
 
   # ── 按 formCode 配置字段编码和选项编码 ──────────────────────────
   # ⚠️ 重要：以下 field 和 option value 必须从真实表单定义/现有数据确认
