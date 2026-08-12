@@ -41,6 +41,7 @@ public class TubeNursingSyncService {
     private final ConfigTubeViewRepository configTubeViewRepository;
     private final NurseRecordsRepository nurseRecordsRepository;
     private final NurseRecordsHistoryRepository nurseRecordsHistoryRepository;
+    private final TubeNursingSyncProperties properties;
 
     /** 防重入锁 */
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -112,8 +113,11 @@ public class TubeNursingSyncService {
                 patientNameMap.put(p.getId(), p.getName());
             }
 
-            // 2. 批量查询管道护理记录
-            List<TubeExe> tubeExes = tubeExeRepository.findByPidIn(pids);
+            // 2. 批量查询管道护理记录（仅查询最近N天）
+            Calendar syncCalendar = Calendar.getInstance();
+            syncCalendar.add(Calendar.DAY_OF_MONTH, -properties.getSyncDays());
+            Date syncStartTime = syncCalendar.getTime();
+            List<TubeExe> tubeExes = tubeExeRepository.findByPidInAndStartTimeAfter(pids, syncStartTime);
             log.info("[TubeNursingSync] tubeExe 命中: {} 条", tubeExes.size());
 
             if (tubeExes.isEmpty()) {
