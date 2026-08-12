@@ -192,6 +192,14 @@ public class FirstAssessmentSourceSelector {
                     candidates.put("branden2", conclusion.get());
                 }
             }
+
+            // param_score_unPlannedCGZYY 特殊处理：截取括号内容赋值给 dght2
+            if ("param_score_unPlannedCGZYY".equals(entry.getKey())) {
+                Optional<String> conclusion = extractParenthesizedConclusion(source.getStrVal());
+                if (conclusion.isPresent()) {
+                    candidates.put("dght2", conclusion.get());
+                }
+            }
         }
 
         // 1b. bedside 映射：BEDSIDE_CODE_MAPPING（ttpf 等，保留原有逻辑）

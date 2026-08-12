@@ -1,0 +1,19 @@
+db.bedside.update({ _id: ObjectId("6a7c393c51a000315934f530") }, {    
+$set: {
+        "pid": "6a7acc4bf3ab694e77a445f0",
+        "code": "param_yaChi",
+        "time": ISODate("2026-08-12T08:00:00.000+08:00"),
+        "strVal": "上排左8:松动   下排右5:脱落   下排左8:活动性假牙   ",
+        "valid": true,
+        "history": [
+            {
+                "time": ISODate("2026-08-12T17:13:32.385+08:00"),
+                "accountId": "666a7c3f5f7b871cf8ac79fd",
+                "desc": "上排左8:松动   "
+            }
+        ],
+        "editUser": "666a7c3f5f7b871cf8ac79fd",
+        "editTime": ISODate("2026-08-12T17:14:04.095+08:00"),
+        "_class": "com.digixmed.icu.smartcare.database.entitys.bedside.Bedside"
+    }
+})

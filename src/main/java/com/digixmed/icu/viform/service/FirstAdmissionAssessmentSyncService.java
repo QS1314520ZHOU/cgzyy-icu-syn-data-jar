@@ -69,7 +69,7 @@ public class FirstAdmissionAssessmentSyncService {
      */
     private static final List<String> BASE_TARGET_FIELDS = Arrays.asList(
             "ttpf", "braden", "branden2", "shzlnl", "shzlnl1", "shzlnl2", "shzlnl3", "shzlnl4",
-            "dght", "morde", "morde2"
+            "dght", "dght2", "morde", "morde2"
     );
 
     /**
