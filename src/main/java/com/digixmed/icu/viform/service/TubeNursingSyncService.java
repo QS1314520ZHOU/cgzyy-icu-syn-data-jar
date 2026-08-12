@@ -243,6 +243,7 @@ public class TubeNursingSyncService {
 
                                     NurseRecordsHistory newHistory = new NurseRecordsHistory();
                                     newHistory.setPid(pid);
+                                    newHistory.setSyncType("PIPE");
                                     newHistory.setTubeExeId(tubeId);
                                     newHistory.setTubeType(tubeName);
                                     newHistory.setShiftType(shiftType);

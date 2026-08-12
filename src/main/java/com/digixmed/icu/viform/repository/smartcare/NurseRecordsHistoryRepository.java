@@ -17,6 +17,11 @@ public interface NurseRecordsHistoryRepository extends MongoRepository<NurseReco
     List<NurseRecordsHistory> findByPidIn(List<String> pids);
 
     /**
+     * 按患者 ID 列表和同步类型查询同步历史。
+     */
+    List<NurseRecordsHistory> findByPidInAndSyncType(List<String> pids, String syncType);
+
+    /**
      * 按管道执行记录 ID、班次类型和护理时间查询同步历史。
      */
     NurseRecordsHistory findByTubeExeIdAndShiftTypeAndTubeRecordTime(

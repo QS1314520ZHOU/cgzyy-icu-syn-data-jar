@@ -20,6 +20,9 @@ public class NurseRecordsHistory {
     /** 患者 ID */
     private String pid;
 
+    /** 同步类型 (TOOTH/PIPE) */
+    private String syncType;
+
     /** 管道执行记录 ID (tubeExe._id) */
     private String tubeExeId;
 

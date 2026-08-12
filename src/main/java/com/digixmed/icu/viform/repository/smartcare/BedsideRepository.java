@@ -4,6 +4,7 @@ import com.digixmed.icu.viform.entity.Bedside;
 import org.springframework.data.mongodb.repository.MongoRepository;
 
 import java.util.Collection;
+import java.util.Date;
 import java.util.List;
 
 /**
@@ -22,6 +23,9 @@ public interface BedsideRepository extends MongoRepository<Bedside, String> {
 
     /** 批量按患者 ID + 编码集合查询。 */
     List<Bedside> findByPidInAndCodeIn(Collection<String> pids, Collection<String> codes);
+
+    /** 批量按患者 ID + 编码 + 时间范围查询。 */
+    List<Bedside> findByPidInAndCodeAndTimeAfter(Collection<String> pids, String code, Date time);
 
     /** 仅查询有效记录。 */
     List<Bedside> findByPidAndValidTrue(String pid);
