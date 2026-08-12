@@ -1,0 +1,14 @@
+db.account.update({ _id: ObjectId("666a7c3f5f7b871cf8ac79fd") }, {    
+$set: {
+        "username": "admin",
+        "trueName": "工程师",
+        "password": "tL6x5Tuet0hezEAEXYFhbw==",
+        "profession": "Admin",
+        "educationLevel": "本科",
+        "createTime": ISODate("2026-07-02T08:55:51.670+08:00"),
+        "departmentCode": "125011",
+        "sex": "男",
+        "valid": "valid",
+        "_class": "com.digixmed.icu.smartcare.database.entitys.accout.Account"
+    }
+})

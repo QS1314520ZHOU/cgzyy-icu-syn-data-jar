@@ -150,29 +150,15 @@ public class ToothSyncService {
                     pids, SYNC_TYPE);
             Map<String, NurseRecordsHistory> historyMap = new HashMap<>();
             for (NurseRecordsHistory history : histories) {
-                String key = buildHistoryKey(history.getPid(), history.getSyncTime());
+                String key = buildHistoryKey(history.getPid(), history.getTubeRecordTime());
                 historyMap.put(key, history);
             }
             log.info("[ToothSync] nurseRecordsHistory 命中: {} 条", histories.size());
 
-            // 5. 按患者分组，取每个患者的最新记录
-            Map<String, Bedside> latestByPid = new HashMap<>();
+            // 5. 遍历处理每条牙齿记录
             for (Bedside record : toothRecords) {
                 String pid = record.getPid();
                 if (!StringUtils.hasText(pid)) continue;
-
-                // 取每个患者最新的有效记录
-                latestByPid.merge(pid, record, (existing, current) -> {
-                    Date existingTime = existing.getTime() != null ? existing.getTime() : new Date(0);
-                    Date currentTime = current.getTime() != null ? current.getTime() : new Date(0);
-                    return currentTime.after(existingTime) ? current : existing;
-                });
-            }
-
-            // 6. 遍历处理每个患者的牙齿数据
-            for (Map.Entry<String, Bedside> entry : latestByPid.entrySet()) {
-                String pid = entry.getKey();
-                Bedside record = entry.getValue();
                 String patientName = patientNameMap.getOrDefault(pid, "");
 
                 try {
@@ -236,6 +222,7 @@ public class ToothSyncService {
 
                         NurseRecordsHistory newHistory = new NurseRecordsHistory();
                         newHistory.setPid(pid);
+                        newHistory.setSyncType(SYNC_TYPE);
                         newHistory.setTubeExeId(record.getId());
                         newHistory.setTubeType(SYNC_TYPE);
                         newHistory.setShiftType("");
