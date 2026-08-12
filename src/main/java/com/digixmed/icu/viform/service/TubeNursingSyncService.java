@@ -1,15 +1,24 @@
 package com.digixmed.icu.viform.service;
 
 import com.digixmed.icu.viform.config.TubeNursingSyncProperties;
-import com.digixmed.icu.viform.entity.*;
-import com.digixmed.icu.viform.repository.smartcare.*;
+import com.digixmed.icu.viform.entity.ConfigTubeView;
+import com.digixmed.icu.viform.entity.NurseRecords;
+import com.digixmed.icu.viform.entity.NurseRecordsHistory;
+import com.digixmed.icu.viform.entity.Patient;
+import com.digixmed.icu.viform.entity.TubeFieldConfig;
+import com.digixmed.icu.viform.repository.smartcare.ConfigTubeViewRepository;
+import com.digixmed.icu.viform.repository.smartcare.NurseRecordsHistoryRepository;
+import com.digixmed.icu.viform.repository.smartcare.NurseRecordsRepository;
+import com.digixmed.icu.viform.repository.smartcare.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.query.Criteria;
+import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
-import java.lang.reflect.Field;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -29,6 +38,7 @@ import java.util.stream.Collectors;
  *   <li>每个管道每个班次只同步第一条有效记录</li>
  *   <li>根据 configTubeView 配置动态映射字段名称</li>
  *   <li>通过 nurseRecordsHistory 实现去重和覆盖更新</li>
+ *   <li>使用 MongoTemplate 查询原始 Document，支持动态字段</li>
  * </ul>
  */
 @Slf4j
@@ -37,11 +47,11 @@ import java.util.stream.Collectors;
 public class TubeNursingSyncService {
 
     private final PatientRepository patientRepository;
-    private final TubeExeRepository tubeExeRepository;
     private final ConfigTubeViewRepository configTubeViewRepository;
     private final NurseRecordsRepository nurseRecordsRepository;
     private final NurseRecordsHistoryRepository nurseRecordsHistoryRepository;
     private final TubeNursingSyncProperties properties;
+    private final MongoTemplate smartCareMongoTemplate;
 
     /** 防重入锁 */
     private final AtomicBoolean running = new AtomicBoolean(false);
@@ -113,14 +123,18 @@ public class TubeNursingSyncService {
                 patientNameMap.put(p.getId(), p.getName());
             }
 
-            // 2. 批量查询管道护理记录（仅查询最近N天）
+            // 2. 使用 MongoTemplate 查询管道护理记录（仅查询最近N天）
             Calendar syncCalendar = Calendar.getInstance();
             syncCalendar.add(Calendar.DAY_OF_MONTH, -properties.getSyncDays());
             Date syncStartTime = syncCalendar.getTime();
-            List<TubeExe> tubeExes = tubeExeRepository.findByPidInAndStartTimeAfter(pids, syncStartTime);
-            log.info("[TubeNursingSync] tubeExe 命中: {} 条", tubeExes.size());
 
-            if (tubeExes.isEmpty()) {
+            Query tubeQuery = new Query();
+            tubeQuery.addCriteria(Criteria.where("pid").in(pids));
+            tubeQuery.addCriteria(Criteria.where("startTime").gte(syncStartTime));
+            List<Document> tubeExeDocs = smartCareMongoTemplate.find(tubeQuery, Document.class, "tubeExe");
+            log.info("[TubeNursingSync] tubeExe 命中: {} 条", tubeExeDocs.size());
+
+            if (tubeExeDocs.isEmpty()) {
                 return new SyncResult(totalPatients.get(), 0, 0, 0, 0, 0);
             }
 
@@ -143,34 +157,47 @@ public class TubeNursingSyncService {
             log.info("[TubeNursingSync] nurseRecordsHistory 命中: {} 条", histories.size());
 
             // 5. 按患者分组处理
-            Map<String, List<TubeExe>> tubeExeByPid = new HashMap<>();
-            for (TubeExe tube : tubeExes) {
-                tubeExeByPid.computeIfAbsent(tube.getPid(), k -> new ArrayList<>()).add(tube);
+            Map<String, List<Document>> tubeExeByPid = new HashMap<>();
+            for (Document doc : tubeExeDocs) {
+                String pid = doc.getString("pid");
+                tubeExeByPid.computeIfAbsent(pid, k -> new ArrayList<>()).add(doc);
             }
 
-            for (Map.Entry<String, List<TubeExe>> entry : tubeExeByPid.entrySet()) {
+            for (Map.Entry<String, List<Document>> entry : tubeExeByPid.entrySet()) {
                 String pid = entry.getKey();
-                List<TubeExe> patientTubes = entry.getValue();
+                List<Document> patientTubes = entry.getValue();
                 String patientName = patientNameMap.getOrDefault(pid, "");
 
-                for (TubeExe tube : patientTubes) {
+                for (Document tubeDoc : patientTubes) {
                     totalTubes.incrementAndGet();
 
                     try {
-                        // 按班次分组，取每班第一条有效记录
-                        Map<String, TubeRecord> firstRecordByShift = selectFirstRecordByShift(tube);
+                        String tubeId = tubeDoc.getObjectId("_id").toHexString();
+                        String tubeName = tubeDoc.getString("name");
+                        Date startTime = tubeDoc.getDate("startTime");
 
-                        for (Map.Entry<String, TubeRecord> shiftEntry : firstRecordByShift.entrySet()) {
+                        // 获取 tubeRecordList
+                        List<Document> tubeRecordList = getList(tubeDoc, "tubeRecordList");
+                        if (tubeRecordList == null || tubeRecordList.isEmpty()) {
+                            continue;
+                        }
+
+                        // 按班次分组，取每班第一条有效记录
+                        Map<String, Document> firstRecordByShift = selectFirstRecordByShift(tubeRecordList);
+
+                        for (Map.Entry<String, Document> shiftEntry : firstRecordByShift.entrySet()) {
                             String shiftType = shiftEntry.getKey();
-                            TubeRecord record = shiftEntry.getValue();
+                            Document recordDoc = shiftEntry.getValue();
 
                             try {
+                                Date recordTime = recordDoc.getDate("time");
+
                                 // 检查是否已同步
-                                String historyKey = buildHistoryKey(tube.getId(), shiftType, record.getTime());
+                                String historyKey = buildHistoryKey(tubeId, shiftType, recordTime);
                                 NurseRecordsHistory existingHistory = historyMap.get(historyKey);
 
                                 // 拼接描述内容
-                                String desc = buildDesc(tube, record, configMap);
+                                String desc = buildDesc(tubeName, startTime, recordDoc, configMap);
 
                                 if (existingHistory != null) {
                                     // 已存在 - 检查内容是否相同
@@ -185,7 +212,7 @@ public class TubeNursingSyncService {
                                             .orElse(null);
                                     if (nurseRecord != null) {
                                         nurseRecord.setDesc(desc);
-                                        nurseRecord.setTime(record.getTime());
+                                        nurseRecord.setTime(recordTime);
                                         nurseRecordsRepository.save(nurseRecord);
 
                                         existingHistory.setSyncContent(desc);
@@ -194,10 +221,11 @@ public class TubeNursingSyncService {
 
                                         updatedRecords.incrementAndGet();
                                         log.info("[TubeNursingSync] 更新护理记录 pid={} tubeType={} shift={}",
-                                                pid, tube.getName(), shiftType);
+                                                pid, tubeName, shiftType);
                                     } else {
                                         // 护理记录被删除，重新创建
-                                        NurseRecords newRecord = createNurseRecord(pid, patientName, tube, record, desc);
+                                        NurseRecords newRecord = createNurseRecord(pid, patientName,
+                                                tubeId, tubeName, recordDoc, desc);
                                         NurseRecords saved = nurseRecordsRepository.insert(newRecord);
 
                                         existingHistory.setNurseRecordId(saved.getId());
@@ -209,15 +237,16 @@ public class TubeNursingSyncService {
                                     }
                                 } else {
                                     // 新增
-                                    NurseRecords newRecord = createNurseRecord(pid, patientName, tube, record, desc);
+                                    NurseRecords newRecord = createNurseRecord(pid, patientName,
+                                            tubeId, tubeName, recordDoc, desc);
                                     NurseRecords saved = nurseRecordsRepository.insert(newRecord);
 
                                     NurseRecordsHistory newHistory = new NurseRecordsHistory();
                                     newHistory.setPid(pid);
-                                    newHistory.setTubeExeId(tube.getId());
-                                    newHistory.setTubeType(tube.getName());
+                                    newHistory.setTubeExeId(tubeId);
+                                    newHistory.setTubeType(tubeName);
                                     newHistory.setShiftType(shiftType);
-                                    newHistory.setTubeRecordTime(record.getTime());
+                                    newHistory.setTubeRecordTime(recordTime);
                                     newHistory.setNurseRecordId(saved.getId());
                                     newHistory.setSyncTime(new Date());
                                     newHistory.setSyncContent(desc);
@@ -225,17 +254,16 @@ public class TubeNursingSyncService {
 
                                     syncedRecords.incrementAndGet();
                                     log.info("[TubeNursingSync] 新增护理记录 pid={} tubeType={} shift={}",
-                                            pid, tube.getName(), shiftType);
+                                            pid, tubeName, shiftType);
                                 }
                             } catch (Exception e) {
                                 log.error("[TubeNursingSync] 同步单条记录异常 pid={} tubeType={} shift={}",
-                                        pid, tube.getName(), shiftType, e);
+                                        pid, tubeName, shiftType, e);
                                 failedRecords.incrementAndGet();
                             }
                         }
                     } catch (Exception e) {
-                        log.error("[TubeNursingSync] 处理管道异常 pid={} tubeType={}",
-                                pid, tube.getName(), e);
+                        log.error("[TubeNursingSync] 处理管道异常 pid={}", pid, e);
                         failedRecords.incrementAndGet();
                     }
                 }
@@ -257,29 +285,43 @@ public class TubeNursingSyncService {
     }
 
     /**
+     * 安全获取 Document 中的 List 字段。
+     */
+    @SuppressWarnings("unchecked")
+    private List<Document> getList(Document doc, String key) {
+        Object value = doc.get(key);
+        if (value instanceof List) {
+            return (List<Document>) value;
+        }
+        return null;
+    }
+
+    /**
      * 按班次分组，取每班第一条有效记录。
      */
-    private Map<String, TubeRecord> selectFirstRecordByShift(TubeExe tube) {
-        Map<String, TubeRecord> result = new HashMap<>();
+    private Map<String, Document> selectFirstRecordByShift(List<Document> tubeRecordList) {
+        Map<String, Document> result = new HashMap<>();
 
-        if (tube.getTubeRecordList() == null || tube.getTubeRecordList().isEmpty()) {
-            return result;
-        }
-
-        for (TubeRecord record : tube.getTubeRecordList()) {
+        for (Document record : tubeRecordList) {
             // 只处理有效记录
-            if (!Boolean.TRUE.equals(record.getValid())) {
-                continue;
-            }
-            if (record.getTime() == null) {
+            Boolean valid = record.getBoolean("valid");
+            if (!Boolean.TRUE.equals(valid)) {
                 continue;
             }
 
-            String shiftType = getShiftType(record.getTime());
+            Date time = record.getDate("time");
+            if (time == null) {
+                continue;
+            }
+
+            String shiftType = getShiftType(time);
 
             // 取每班时间最早的记录
-            result.merge(shiftType, record, (existing, current) ->
-                    current.getTime().before(existing.getTime()) ? current : existing);
+            result.merge(shiftType, record, (existing, current) -> {
+                Date existingTime = existing.getDate("time");
+                Date currentTime = current.getDate("time");
+                return currentTime.before(existingTime) ? current : existing;
+            });
         }
 
         return result;
@@ -313,27 +355,30 @@ public class TubeNursingSyncService {
     /**
      * 拼接护理记录描述。
      */
-    private String buildDesc(TubeExe tube, TubeRecord record, Map<String, ConfigTubeView> configMap) {
+    private String buildDesc(String tubeName, Date startTime,
+                              Document recordDoc, Map<String, ConfigTubeView> configMap) {
         StringBuilder sb = new StringBuilder();
 
         // 管道类型：置管时间
-        sb.append(tube.getName()).append("：置管时间 ");
-        if (tube.getStartTime() != null) {
+        sb.append(tubeName).append("：置管时间 ");
+        if (startTime != null) {
             SimpleDateFormat sdf = new SimpleDateFormat("MM-dd HH:mm");
-            sb.append(sdf.format(tube.getStartTime()));
+            sb.append(sdf.format(startTime));
         }
         sb.append(";");
 
         // 操作人
-        if (StringUtils.hasText(record.getRecordUserName())) {
-            sb.append("操作人:").append(record.getRecordUserName()).append(";");
+        String recordUserName = recordDoc.getString("recordUserName");
+        if (StringUtils.hasText(recordUserName)) {
+            sb.append("操作人:").append(recordUserName).append(";");
         }
 
         // 根据 configTubeView 配置拼接字段
-        ConfigTubeView config = configMap.get(tube.getName());
+        ConfigTubeView config = configMap.get(tubeName);
         if (config != null && config.getTubeRecordFieldConfigList() != null) {
             for (TubeFieldConfig fieldConfig : config.getTubeRecordFieldConfigList()) {
-                Object value = getFieldValue(record, fieldConfig.getField());
+                String field = fieldConfig.getField();
+                Object value = recordDoc.get(field);
                 if (value != null && StringUtils.hasText(value.toString())) {
                     sb.append(fieldConfig.getName()).append(":").append(value).append(";");
                 }
@@ -344,31 +389,18 @@ public class TubeNursingSyncService {
     }
 
     /**
-     * 通过反射获取对象字段值。
-     */
-    private Object getFieldValue(Object obj, String fieldName) {
-        try {
-            Field field = obj.getClass().getDeclaredField(fieldName);
-            field.setAccessible(true);
-            return field.get(obj);
-        } catch (NoSuchFieldException | IllegalAccessException e) {
-            log.debug("[TubeNursingSync] 无法获取字段 {} 的值", fieldName);
-            return null;
-        }
-    }
-
-    /**
      * 创建护理记录对象。
      */
     private NurseRecords createNurseRecord(String pid, String patientName,
-                                            TubeExe tube, TubeRecord record, String desc) {
+                                            String tubeId, String tubeName,
+                                            Document recordDoc, String desc) {
         NurseRecords nurseRecord = new NurseRecords();
         nurseRecord.setPid(pid);
         nurseRecord.setName(patientName);
-        nurseRecord.setUsername(record.getRecordUserName());
-        nurseRecord.setUserId(record.getRecordUser());
+        nurseRecord.setUsername(recordDoc.getString("recordUserName"));
+        nurseRecord.setUserId(recordDoc.getString("recordUser"));
         nurseRecord.setDesc(desc);
-        nurseRecord.setTime(record.getTime());
+        nurseRecord.setTime(recordDoc.getDate("time"));
         nurseRecord.setCreateTime(new Date());
         nurseRecord.setValid(true);
         nurseRecord.setAutoSyn(true);
