@@ -359,8 +359,8 @@ public class TubeNursingSyncService {
                               Document recordDoc, Map<String, ConfigTubeView> configMap) {
         StringBuilder sb = new StringBuilder();
 
-        // 管道类型：置管时间
-        sb.append(tubeName).append("：置管时间 ");
+        // 管道类型：时间
+        sb.append(tubeName).append("：时间 ");
         if (startTime != null) {
             SimpleDateFormat sdf = new SimpleDateFormat("MM-dd HH:mm");
             sb.append(sdf.format(startTime));
