@@ -1,10 +1,12 @@
 package com.digixmed.icu.viform.service;
 
 import com.digixmed.icu.viform.config.TubeNursingSyncProperties;
+import com.digixmed.icu.viform.entity.Account;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.entity.NurseRecords;
 import com.digixmed.icu.viform.entity.NurseRecordsHistory;
 import com.digixmed.icu.viform.entity.Patient;
+import com.digixmed.icu.viform.repository.smartcare.AccountRepository;
 import com.digixmed.icu.viform.repository.smartcare.BedsideRepository;
 import com.digixmed.icu.viform.repository.smartcare.NurseRecordsHistoryRepository;
 import com.digixmed.icu.viform.repository.smartcare.NurseRecordsRepository;
@@ -43,6 +45,7 @@ public class ToothSyncService {
     private final BedsideRepository bedsideRepository;
     private final NurseRecordsRepository nurseRecordsRepository;
     private final NurseRecordsHistoryRepository nurseRecordsHistoryRepository;
+    private final AccountRepository accountRepository;
     private final TubeNursingSyncProperties properties;
 
     /** 防重入锁 */
@@ -126,7 +129,23 @@ public class ToothSyncService {
                 return new SyncResult(totalPatients.get(), 0, 0, 0, 0);
             }
 
-            // 3. 批量查询已有的同步历史（牙齿类型）
+            // 3. 批量查询账户信息（editUser → trueName）
+            Set<String> editUserIds = toothRecords.stream()
+                    .map(Bedside::getEditUser)
+                    .filter(StringUtils::hasText)
+                    .collect(Collectors.toSet());
+            Map<String, String> accountNameMap = new HashMap<>();
+            if (!editUserIds.isEmpty()) {
+                List<Account> accounts = accountRepository.findByIdIn(editUserIds);
+                for (Account account : accounts) {
+                    if (StringUtils.hasText(account.getTrueName())) {
+                        accountNameMap.put(account.getId(), account.getTrueName());
+                    }
+                }
+            }
+            log.info("[ToothSync] account 命中: {} 条", accountNameMap.size());
+
+            // 4. 批量查询已有的同步历史（牙齿类型）
             List<NurseRecordsHistory> histories = nurseRecordsHistoryRepository.findByPidInAndSyncType(
                     pids, SYNC_TYPE);
             Map<String, NurseRecordsHistory> historyMap = new HashMap<>();
@@ -136,7 +155,7 @@ public class ToothSyncService {
             }
             log.info("[ToothSync] nurseRecordsHistory 命中: {} 条", histories.size());
 
-            // 4. 按患者分组，取每个患者的最新记录
+            // 5. 按患者分组，取每个患者的最新记录
             Map<String, Bedside> latestByPid = new HashMap<>();
             for (Bedside record : toothRecords) {
                 String pid = record.getPid();
@@ -150,7 +169,7 @@ public class ToothSyncService {
                 });
             }
 
-            // 5. 遍历处理每个患者的牙齿数据
+            // 6. 遍历处理每个患者的牙齿数据
             for (Map.Entry<String, Bedside> entry : latestByPid.entrySet()) {
                 String pid = entry.getKey();
                 Bedside record = entry.getValue();
@@ -164,6 +183,10 @@ public class ToothSyncService {
                     }
 
                     Date recordTime = record.getTime();
+
+                    // 获取操作人姓名
+                    String editUserId = record.getEditUser();
+                    String editUserName = accountNameMap.getOrDefault(editUserId, "");
 
                     // 检查是否已同步
                     String historyKey = buildHistoryKey(pid, recordTime);
@@ -183,6 +206,7 @@ public class ToothSyncService {
                         if (nurseRecord != null) {
                             nurseRecord.setDesc(strVal);
                             nurseRecord.setTime(recordTime);
+                            nurseRecord.setUsername(editUserName);
                             nurseRecordsRepository.save(nurseRecord);
 
                             existingHistory.setSyncContent(strVal);
@@ -193,7 +217,8 @@ public class ToothSyncService {
                             log.info("[ToothSync] 更新牙齿护理记录 pid={}", pid);
                         } else {
                             // 护理记录被删除，重新创建
-                            NurseRecords newRecord = createNurseRecord(pid, patientName, record, strVal);
+                            NurseRecords newRecord = createNurseRecord(pid, patientName,
+                                    editUserName, editUserId, record, strVal);
                             NurseRecords saved = nurseRecordsRepository.insert(newRecord);
 
                             existingHistory.setNurseRecordId(saved.getId());
@@ -205,7 +230,8 @@ public class ToothSyncService {
                         }
                     } else {
                         // 新增
-                        NurseRecords newRecord = createNurseRecord(pid, patientName, record, strVal);
+                        NurseRecords newRecord = createNurseRecord(pid, patientName,
+                                editUserName, editUserId, record, strVal);
                         NurseRecords saved = nurseRecordsRepository.insert(newRecord);
 
                         NurseRecordsHistory newHistory = new NurseRecordsHistory();
@@ -255,12 +281,13 @@ public class ToothSyncService {
      * 创建护理记录对象。
      */
     private NurseRecords createNurseRecord(String pid, String patientName,
+                                            String editUserName, String editUserId,
                                             Bedside record, String desc) {
         NurseRecords nurseRecord = new NurseRecords();
         nurseRecord.setPid(pid);
         nurseRecord.setName(patientName);
-        nurseRecord.setUsername(record.getEditUser());
-        nurseRecord.setUserId(record.getEditUser());
+        nurseRecord.setUsername(editUserName);
+        nurseRecord.setUserId(editUserId);
         nurseRecord.setDesc(desc);
         nurseRecord.setTime(record.getTime());
         nurseRecord.setCreateTime(new Date());
