@@ -377,7 +377,7 @@ public class TubeNursingSyncService {
                 }
                 Date minuteTime = TimeUtils.truncateToMinute(rawTime);
 
-                String desc = buildDesc(tubeType, tubeExeDoc.getDate("startTime"), record, tubeViewMap);
+                String desc = buildDesc(tubeType, record, tubeViewMap);
                 if (!StringUtils.hasText(desc)) {
                     continue;
                 }
@@ -519,37 +519,43 @@ public class TubeNursingSyncService {
     /**
      * 拼接护理记录描述（单条管道）。
      */
-    private String buildDesc(String tubeName, Date startTime,
-                              Document recordDoc, Map<String, ConfigTubeView> configMap) {
-        StringBuilder sb = new StringBuilder();
-
-        // 管道类型：时间
-        sb.append(tubeName).append("：时间 ");
-        if (startTime != null) {
-            SimpleDateFormat sdf = new SimpleDateFormat("MM-dd HH:mm");
-            sb.append(sdf.format(startTime));
-        }
-        sb.append(";");
-
-        // 操作人
-        String recordUserName = recordDoc.getString("recordUserName");
-        if (StringUtils.hasText(recordUserName)) {
-            sb.append("操作人:").append(recordUserName).append(";");
-        }
-
-        // 根据 configTubeView 配置拼接字段
+    /**
+     * 拼接护理记录描述（单条管道）。
+     *
+     * <p>格式：{管道名}：{字段名}:{值};{字段名}:{值};</p>
+     * <p>例：胃管：置入长度:55cm;固定情况:妥善固定;</p>
+     *
+     * <p>按业务要求不再输出「时间」和「操作人」：
+     * 时间已由护理记录本身的 time 字段体现，操作人由 username 字段体现，
+     * 描述里重复出现会让合并后的多管道记录冗长。</p>
+     *
+     * @return 描述文本；无任何有效字段时返回 null（调用方跳过该条）
+     */
+    private String buildDesc(String tubeName, Document recordDoc,
+                             Map<String, ConfigTubeView> configMap) {
         ConfigTubeView config = configMap.get(tubeName);
-        if (config != null && config.getTubeRecordFieldConfigList() != null) {
-            for (TubeFieldConfig fieldConfig : config.getTubeRecordFieldConfigList()) {
-                String field = fieldConfig.getField();
-                Object value = recordDoc.get(field);
-                if (value != null && StringUtils.hasText(value.toString())) {
-                    sb.append(fieldConfig.getName()).append(":").append(value).append(";");
-                }
+        if (config == null || config.getTubeRecordFieldConfigList() == null) {
+            return null;
+        }
+
+        StringBuilder fields = new StringBuilder();
+        for (TubeFieldConfig fieldConfig : config.getTubeRecordFieldConfigList()) {
+            String field = fieldConfig.getField();
+            Object value = recordDoc.get(field);
+            if (value != null && StringUtils.hasText(value.toString())) {
+                fields.append(fieldConfig.getName())
+                      .append(":")
+                      .append(value.toString().trim())
+                      .append(";");
             }
         }
 
-        return sb.toString();
+        // 去掉时间和操作人后，若配置字段全为空则整条无意义，不生成护理记录
+        if (fields.length() == 0) {
+            return null;
+        }
+
+        return tubeName + "：" + fields;
     }
 
 }
