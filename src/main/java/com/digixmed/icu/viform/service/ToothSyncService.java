@@ -1,5 +1,6 @@
 package com.digixmed.icu.viform.service;
 
+import com.digixmed.icu.viform.common.TimeUtils;
 import com.digixmed.icu.viform.config.TubeNursingSyncProperties;
 import com.digixmed.icu.viform.entity.Account;
 import com.digixmed.icu.viform.entity.Bedside;
@@ -179,29 +180,15 @@ public class ToothSyncService {
                     NurseRecordsHistory existingHistory = historyMap.get(historyKey);
 
                     if (existingHistory != null) {
-                        // 已存在 - 检查内容是否相同
-                        if (strVal.equals(existingHistory.getSyncContent())) {
-                            skippedRecords.incrementAndGet();
-                            continue;
-                        }
+                        Date minuteTime = TimeUtils.truncateToMinute(recordTime);
+                        boolean contentSame = strVal.equals(existingHistory.getSyncContent());
 
-                        // 内容不同 - 更新
-                        NurseRecords nurseRecord = nurseRecordsRepository
-                                .findById(existingHistory.getNurseRecordId())
-                                .orElse(null);
-                        if (nurseRecord != null) {
-                            nurseRecord.setDesc(strVal);
-                            nurseRecord.setTime(recordTime);
-                            nurseRecord.setUsername(editUserName);
-                            nurseRecordsRepository.save(nurseRecord);
+                        NurseRecords nurseRecord = existingHistory.getNurseRecordId() == null
+                                ? null
+                                : nurseRecordsRepository.findById(existingHistory.getNurseRecordId())
+                                        .orElse(null);
 
-                            existingHistory.setSyncContent(strVal);
-                            existingHistory.setSyncTime(new Date());
-                            nurseRecordsHistoryRepository.save(existingHistory);
-
-                            updatedRecords.incrementAndGet();
-                            log.info("[ToothSync] 更新牙齿护理记录 pid={}", pid);
-                        } else {
+                        if (nurseRecord == null) {
                             // 护理记录被删除，重新创建
                             NurseRecords newRecord = createNurseRecord(pid, patientName,
                                     editUserName, editUserId, record, strVal);
@@ -213,7 +200,29 @@ public class ToothSyncService {
                             nurseRecordsHistoryRepository.save(existingHistory);
 
                             syncedRecords.incrementAndGet();
+                            continue;
                         }
+
+                        boolean timeSame = Objects.equals(nurseRecord.getTime(), minuteTime);
+
+                        if (contentSame && timeSame) {
+                            skippedRecords.incrementAndGet();
+                            continue;
+                        }
+
+                        // 内容或时间有变化 - 更新
+                        nurseRecord.setDesc(strVal);
+                        nurseRecord.setTime(minuteTime);
+                        nurseRecord.setUsername(editUserName);
+                        nurseRecordsRepository.save(nurseRecord);
+
+                        existingHistory.setSyncContent(strVal);
+                        existingHistory.setSyncTime(new Date());
+                        nurseRecordsHistoryRepository.save(existingHistory);
+
+                        updatedRecords.incrementAndGet();
+                        log.info("[ToothSync] 更新牙齿护理记录 pid={}, 内容变更={}, 时间变更={}",
+                                pid, !contentSame, !timeSame);
                     } else {
                         // 新增
                         NurseRecords newRecord = createNurseRecord(pid, patientName,
@@ -276,7 +285,7 @@ public class ToothSyncService {
         nurseRecord.setUsername(editUserName);
         nurseRecord.setUserId(editUserId);
         nurseRecord.setDesc(desc);
-        nurseRecord.setTime(record.getTime());
+        nurseRecord.setTime(TimeUtils.truncateToMinute(record.getTime()));
         nurseRecord.setCreateTime(new Date());
         nurseRecord.setValid(true);
         nurseRecord.setAutoSyn(true);

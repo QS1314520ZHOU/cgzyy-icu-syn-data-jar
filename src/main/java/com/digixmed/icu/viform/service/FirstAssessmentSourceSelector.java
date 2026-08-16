@@ -40,6 +40,19 @@ public class FirstAssessmentSourceSelector {
     /** 匹配数字（整数、小数、负数） */
     private static final Pattern SCORE_PATTERN = Pattern.compile("[-+]?\\d+(?:\\.\\d+)?");
 
+    // ── 血压 bedside code ────────────────────────────────────────────
+
+    /** 收缩压 */
+    public static final String CODE_NIBP_S = "param_nibp_s";
+    /** 舒张压 */
+    public static final String CODE_NIBP_D = "param_nibp_d";
+
+    /** 血压目标表单字段：收缩压/舒张压合并写入此单字段 */
+    public static final String FIELD_XY = "xy";
+
+    /** 血压合成分隔符 */
+    private static final String BP_SEPARATOR = "/";
+
     // ── 其他 bedside code → 表单字段 ────────────────────────────────
 
     private static final Map<String, String[]> BEDSIDE_CODE_MAPPING = new LinkedHashMap<>();
@@ -234,7 +247,10 @@ public class FirstAssessmentSourceSelector {
             }
         }
 
-        // 1c. 生命体征：xy(nibp_s/nibp_d)、tw、mb(优先脉搏)、hx
+        // 1c. 血压：两条 bedside 配对合成单字段 xy
+        putBloodPressure(candidates, pid, pidBedside);
+
+        // 1c2. 其他生命体征：tw、mb(优先脉搏)、hx
         resolveVitalSigns(pidBedside, candidates);
 
         // 1d. 意识状态：param_Yishi → yszt1(编码) + yszt8(不匹配时的原始值)
@@ -271,10 +287,11 @@ public class FirstAssessmentSourceSelector {
     // ==================== 生命体征解析 ====================
 
     /**
-     * 解析生命体征：xy(血压)、tw(体温)、mb(脉搏/心率)、hx(呼吸)。
+     * 解析生命体征：tw(体温)、mb(脉搏/心率)、hx(呼吸)。
+     *
+     * <p>血压(xy) 已由 {@link #putBloodPressure} 单独处理。</p>
      *
      * <ul>
-     *   <li>xy → param_nibp_s(收缩压) + param_nibp_d(舒张压)</li>
      *   <li>tw → param_T(体温)</li>
      *   <li>mb → 优先 param_脉搏，无值时兜底 param_HR</li>
      *   <li>hx → param_resp(呼吸)</li>
@@ -282,22 +299,6 @@ public class FirstAssessmentSourceSelector {
      */
     private void resolveVitalSigns(Map<String, Bedside> pidBedside,
                                     Map<String, Object> candidates) {
-        // 血压：收缩压 + 舒张压
-        Bedside nibpS = pidBedside.get("param_nibp_s");
-        if (nibpS != null && StringUtils.hasText(nibpS.getStrVal())) {
-            candidates.put("nibp_s", nibpS.getStrVal().trim());
-            log.debug("[FirstAssessmentSync] nibp_s 命中, val={}", nibpS.getStrVal().trim());
-        } else {
-            log.debug("[FirstAssessmentSync] nibp_s 未命中, bedside keys={}", pidBedside.keySet());
-        }
-        Bedside nibpD = pidBedside.get("param_nibp_d");
-        if (nibpD != null && StringUtils.hasText(nibpD.getStrVal())) {
-            candidates.put("nibp_d", nibpD.getStrVal().trim());
-            log.debug("[FirstAssessmentSync] nibp_d 命中, val={}", nibpD.getStrVal().trim());
-        } else {
-            log.debug("[FirstAssessmentSync] nibp_d 未命中, bedside keys={}", pidBedside.keySet());
-        }
-
         // 体温
         Bedside tw = pidBedside.get("param_T");
         if (tw != null && StringUtils.hasText(tw.getStrVal())) {
@@ -662,5 +663,72 @@ public class FirstAssessmentSourceSelector {
             }
         }
         return false;
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    //  血压合成
+    // ══════════════════════════════════════════════════════════════
+
+    /**
+     * 血压合成：param_nibp_s（收缩压）与 param_nibp_d（舒张压）
+     * 两条 bedside 配对，合成 "收缩压/舒张压" 写入单字段 xy。
+     *
+     * <p>规则：</p>
+     * <ul>
+     *   <li>两条必须都有有效首条数据才写入，缺任意一条整体跳过，
+     *       避免产生 "120/" 或 "/80" 这类半截值</li>
+     *   <li>各自独立取「入科后第一条有效数据」，不要求两者时间戳完全相同
+     *       （监护仪采集一般同时间，若不同仅告警不阻断）</li>
+     *   <li>值先做数字提取规范化，兼容 "120mmHg" 这类带单位写法</li>
+     * </ul>
+     *
+     * @param candidates  候选值容器，直接写入
+     * @param pid         患者 ID，仅用于日志
+     * @param pidBedside  该患者 code → 首条有效 bedside
+     */
+    private void putBloodPressure(Map<String, Object> candidates,
+                                  String pid,
+                                  Map<String, Bedside> pidBedside) {
+        Bedside sysBed = pidBedside.get(CODE_NIBP_S);
+        Bedside diaBed = pidBedside.get(CODE_NIBP_D);
+
+        String sys = normalizeVital(sysBed);
+        String dia = normalizeVital(diaBed);
+
+        if (sys == null || dia == null) {
+            log.info("[FirstAssessmentSync] pid={} 血压跳过: {}={}, {}={}",
+                    pid, CODE_NIBP_S, sys, CODE_NIBP_D, dia);
+            return;
+        }
+
+        if (sysBed.getTime() != null && diaBed.getTime() != null
+                && !sysBed.getTime().equals(diaBed.getTime())) {
+            log.warn("[FirstAssessmentSync] pid={} 血压首条时间不一致: 收缩压={}, 舒张压={}，仍按各自首条合成",
+                    pid, sysBed.getTime(), diaBed.getTime());
+        }
+
+        String value = sys + BP_SEPARATOR + dia;
+        candidates.put(FIELD_XY, value);
+        log.info("[FirstAssessmentSync] pid={} 血压 xy={} (time={})",
+                pid, value, sysBed.getTime());
+    }
+
+    /**
+     * 生命体征值规范化：优先提取第一个数字，提取不到则返回 trim 后的原值。
+     *
+     * <p>例："120" → "120"；"120mmHg" → "120"；"36.5℃" → "36.5"。</p>
+     *
+     * @return 规范化后的值；源为 null 或 strVal 为空时返回 null
+     */
+    private String normalizeVital(Bedside source) {
+        if (source == null || !StringUtils.hasText(source.getStrVal())) {
+            return null;
+        }
+        String raw = source.getStrVal().trim();
+        Matcher m = SCORE_PATTERN.matcher(raw);
+        if (m.find()) {
+            return m.group();
+        }
+        return raw;
     }
 }

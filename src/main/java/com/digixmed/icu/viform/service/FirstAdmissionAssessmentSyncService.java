@@ -14,6 +14,7 @@ import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
+import com.mongodb.client.result.UpdateResult;
 import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
@@ -70,7 +71,10 @@ public class FirstAdmissionAssessmentSyncService {
     private static final List<String> BASE_TARGET_FIELDS = Arrays.asList(
             "ttpf", "braden", "branden2", "shzlnl", "shzlnl1", "shzlnl2", "shzlnl3", "shzlnl4",
             "dght", "dght2", "morde", "morde2",
-            "nibp_s", "nibp_d", "tw", "mb", "hx", "yszt1", "yszt8"
+            // 生命体征：xy=血压(收缩压/舒张压合成)、tw=体温、mb=脉搏、hx=呼吸
+            "xy", "tw", "mb", "hx",
+            // 意识状态：yszt1=选项、yszt8=其他文本
+            "yszt1", "yszt8"
     );
 
     /**
@@ -489,7 +493,7 @@ public class FirstAdmissionAssessmentSyncService {
                 Update update = new Update();
                 update.set("fieldDataList.$.value", normalizeValueForMongo(change.newValue));
 
-                var result = smartCareMongoTemplate.updateFirst(query, update, DFormData.class);
+                UpdateResult result = smartCareMongoTemplate.updateFirst(query, update, DFormData.class);
 
                 if (result.getModifiedCount() == 0) {
                     DFormData reloaded = smartCareMongoTemplate.findOne(
@@ -518,7 +522,7 @@ public class FirstAdmissionAssessmentSyncService {
 
                 Update update = new Update().push("fieldDataList", fieldDoc);
 
-                var result = smartCareMongoTemplate.updateFirst(query, update, DFormData.class);
+                UpdateResult result = smartCareMongoTemplate.updateFirst(query, update, DFormData.class);
                 if (result.getModifiedCount() == 0) {
                     log.debug("[FirstAssessmentSync] pid={} field={} may already exist, skip",
                             form.getPid(), change.field);

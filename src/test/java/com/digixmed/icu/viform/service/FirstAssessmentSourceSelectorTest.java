@@ -604,8 +604,9 @@ class FirstAssessmentSourceSelectorTest {
                 "param_nibp_d", buildBedside("p1", "param_nibp_d", "80", parseDate("2026-08-01T11:00:00"), new Date(), "id2")
         )));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
-        assertEquals("120", result.get("nibp_s"));
-        assertEquals("80", result.get("nibp_d"));
+        assertEquals("120/80", result.get("xy"));
+        assertNull(result.get("nibp_s"));
+        assertNull(result.get("nibp_d"));
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.digixmed.icu.viform.service;
 
+import com.digixmed.icu.viform.common.TimeUtils;
 import com.digixmed.icu.viform.config.TubeNursingSyncProperties;
 import com.digixmed.icu.viform.entity.ConfigTubeView;
 import com.digixmed.icu.viform.entity.NurseRecords;
@@ -64,6 +65,12 @@ public class TubeNursingSyncService {
     private static final String SHIFT_AFTERNOON = "AFTERNOON";
     private static final String SHIFT_NIGHT = "NIGHT";
 
+    /** 同步类型标识 */
+    private static final String SYNC_TYPE_PIPE = "PIPE";
+
+    /** 合并后各管道描述之间的分隔符 */
+    private static final String DESC_SEPARATOR = " ";
+
     /** 同步结果统计 */
     public static class SyncResult {
         public final int totalPatients;
@@ -81,6 +88,55 @@ public class TubeNursingSyncService {
             this.skippedRecords = skippedRecords;
             this.updatedRecords = updatedRecords;
             this.failedRecords = failedRecords;
+        }
+    }
+
+    /**
+     * 合并单元：同一患者、同一分钟内的所有管道记录合并成一条护理记录。
+     */
+    private static class MergeUnit {
+        /** 截断到分钟的时间点 */
+        Date minuteTime;
+        /** 班次（取该分钟内第一条记录的班次） */
+        String shiftType;
+        /** 各管道的描述片段 */
+        final List<DescPart> parts = new ArrayList<>();
+        /** 操作人（取第一条非空的） */
+        String recordUserName;
+        String recordUserId;
+        /** 参与合并的 tubeExe id 集合，用于回写 history */
+        final Set<String> tubeExeIds = new LinkedHashSet<>();
+
+        /**
+         * 拼接合并后的描述。
+         *
+         * <p>必须先按 sortKey 排序：Mongo 返回顺序不保证稳定，
+         * 若不排序会导致 syncContent 每轮抖动，触发无意义的重复更新。</p>
+         */
+        String buildDesc() {
+            List<DescPart> sorted = new ArrayList<>(parts);
+            sorted.sort(Comparator
+                    .comparing((DescPart p) -> p.sortKey, Comparator.nullsLast(Comparator.naturalOrder()))
+                    .thenComparing(p -> p.desc, Comparator.nullsLast(Comparator.naturalOrder())));
+            StringBuilder sb = new StringBuilder();
+            for (DescPart p : sorted) {
+                if (sb.length() > 0) {
+                    sb.append(DESC_SEPARATOR);
+                }
+                sb.append(p.desc);
+            }
+            return sb.toString();
+        }
+    }
+
+    /** 单条管道的描述片段 */
+    private static class DescPart {
+        final String sortKey;
+        final String desc;
+
+        DescPart(String sortKey, String desc) {
+            this.sortKey = sortKey;
+            this.desc = desc;
         }
     }
 
@@ -146,14 +202,16 @@ public class TubeNursingSyncService {
             }
             log.info("[TubeNursingSync] configTubeView 命中: {} 条", configViews.size());
 
-            // 4. 批量查询已有的同步历史
+            // 4. 批量查询已有的同步历史（合并键）
             List<NurseRecordsHistory> histories = nurseRecordsHistoryRepository.findByPidIn(pids);
-            Map<String, NurseRecordsHistory> historyMap = new HashMap<>();
-            for (NurseRecordsHistory history : histories) {
-                String key = buildHistoryKey(history.getTubeExeId(), history.getShiftType(),
-                        history.getTubeRecordTime());
-                historyMap.put(key, history);
-            }
+            Map<String, NurseRecordsHistory> historyMap = histories.stream()
+                    .filter(h -> SYNC_TYPE_PIPE.equals(h.getSyncType()))
+                    .filter(h -> h.getTubeRecordTime() != null)
+                    .collect(Collectors.toMap(
+                            h -> buildMergedHistoryKey(h.getPid(), TimeUtils.truncateToMinute(h.getTubeRecordTime())),
+                            h -> h,
+                            (a, b) -> a.getSyncTime() != null && b.getSyncTime() != null
+                                    && a.getSyncTime().after(b.getSyncTime()) ? a : b));
             log.info("[TubeNursingSync] nurseRecordsHistory 命中: {} 条", histories.size());
 
             // 5. 按患者分组处理
@@ -165,108 +223,16 @@ public class TubeNursingSyncService {
 
             for (Map.Entry<String, List<Document>> entry : tubeExeByPid.entrySet()) {
                 String pid = entry.getKey();
-                List<Document> patientTubes = entry.getValue();
+                List<Document> tubeExeDocs4Pid = entry.getValue();
                 String patientName = patientNameMap.getOrDefault(pid, "");
 
-                for (Document tubeDoc : patientTubes) {
-                    totalTubes.incrementAndGet();
-
-                    try {
-                        String tubeId = tubeDoc.getObjectId("_id").toHexString();
-                        String tubeName = tubeDoc.getString("name");
-                        Date startTime = tubeDoc.getDate("startTime");
-
-                        // 获取 tubeRecordList
-                        List<Document> tubeRecordList = getList(tubeDoc, "tubeRecordList");
-                        if (tubeRecordList == null || tubeRecordList.isEmpty()) {
-                            continue;
-                        }
-
-                        // 按班次分组，取每班第一条有效记录
-                        Map<String, Document> firstRecordByShift = selectFirstRecordByShift(tubeRecordList);
-
-                        for (Map.Entry<String, Document> shiftEntry : firstRecordByShift.entrySet()) {
-                            String shiftType = shiftEntry.getKey();
-                            Document recordDoc = shiftEntry.getValue();
-
-                            try {
-                                Date recordTime = recordDoc.getDate("time");
-
-                                // 检查是否已同步
-                                String historyKey = buildHistoryKey(tubeId, shiftType, recordTime);
-                                NurseRecordsHistory existingHistory = historyMap.get(historyKey);
-
-                                // 拼接描述内容
-                                String desc = buildDesc(tubeName, startTime, recordDoc, configMap);
-
-                                if (existingHistory != null) {
-                                    // 已存在 - 检查内容是否相同
-                                    if (desc.equals(existingHistory.getSyncContent())) {
-                                        skippedRecords.incrementAndGet();
-                                        continue;
-                                    }
-
-                                    // 内容不同 - 更新
-                                    NurseRecords nurseRecord = nurseRecordsRepository
-                                            .findById(existingHistory.getNurseRecordId())
-                                            .orElse(null);
-                                    if (nurseRecord != null) {
-                                        nurseRecord.setDesc(desc);
-                                        nurseRecord.setTime(recordTime);
-                                        nurseRecordsRepository.save(nurseRecord);
-
-                                        existingHistory.setSyncContent(desc);
-                                        existingHistory.setSyncTime(new Date());
-                                        nurseRecordsHistoryRepository.save(existingHistory);
-
-                                        updatedRecords.incrementAndGet();
-                                        log.info("[TubeNursingSync] 更新护理记录 pid={} tubeType={} shift={}",
-                                                pid, tubeName, shiftType);
-                                    } else {
-                                        // 护理记录被删除，重新创建
-                                        NurseRecords newRecord = createNurseRecord(pid, patientName,
-                                                tubeId, tubeName, recordDoc, desc);
-                                        NurseRecords saved = nurseRecordsRepository.insert(newRecord);
-
-                                        existingHistory.setNurseRecordId(saved.getId());
-                                        existingHistory.setSyncContent(desc);
-                                        existingHistory.setSyncTime(new Date());
-                                        nurseRecordsHistoryRepository.save(existingHistory);
-
-                                        syncedRecords.incrementAndGet();
-                                    }
-                                } else {
-                                    // 新增
-                                    NurseRecords newRecord = createNurseRecord(pid, patientName,
-                                            tubeId, tubeName, recordDoc, desc);
-                                    NurseRecords saved = nurseRecordsRepository.insert(newRecord);
-
-                                    NurseRecordsHistory newHistory = new NurseRecordsHistory();
-                                    newHistory.setPid(pid);
-                                    newHistory.setSyncType("PIPE");
-                                    newHistory.setTubeExeId(tubeId);
-                                    newHistory.setTubeType(tubeName);
-                                    newHistory.setShiftType(shiftType);
-                                    newHistory.setTubeRecordTime(recordTime);
-                                    newHistory.setNurseRecordId(saved.getId());
-                                    newHistory.setSyncTime(new Date());
-                                    newHistory.setSyncContent(desc);
-                                    nurseRecordsHistoryRepository.insert(newHistory);
-
-                                    syncedRecords.incrementAndGet();
-                                    log.info("[TubeNursingSync] 新增护理记录 pid={} tubeType={} shift={}",
-                                            pid, tubeName, shiftType);
-                                }
-                            } catch (Exception e) {
-                                log.error("[TubeNursingSync] 同步单条记录异常 pid={} tubeType={} shift={}",
-                                        pid, tubeName, shiftType, e);
-                                failedRecords.incrementAndGet();
-                            }
-                        }
-                    } catch (Exception e) {
-                        log.error("[TubeNursingSync] 处理管道异常 pid={}", pid, e);
-                        failedRecords.incrementAndGet();
-                    }
+                try {
+                    Map<String, MergeUnit> units = collectMergeUnits(pid, tubeExeDocs4Pid, configMap);
+                    persistMergeUnits(pid, patientName, units, historyMap,
+                            syncedRecords, skippedRecords, updatedRecords, failedRecords);
+                } catch (Exception e) {
+                    log.error("[TubeNursingSync] 处理患者管道异常 pid={}", pid, e);
+                    failedRecords.incrementAndGet();
                 }
             }
 
@@ -345,16 +311,213 @@ public class TubeNursingSyncService {
         }
     }
 
-    /**
-     * 构建历史记录唯一键。
-     */
-    private String buildHistoryKey(String tubeExeId, String shiftType, Date tubeRecordTime) {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmm");
-        return tubeExeId + "_" + shiftType + "_" + sdf.format(tubeRecordTime);
+    // ══════════════════════════════════════════════════════════════
+    //  合并相关
+    // ══════════════════════════════════════════════════════════════
+
+    /** 合并键：同一患者同一分钟归为一组 */
+    private String buildMergeKey(String pid, Date minuteTime) {
+        return pid + "|" + new SimpleDateFormat("yyyyMMddHHmm").format(minuteTime);
     }
 
     /**
-     * 拼接护理记录描述。
+     * 合并后的历史去重键。
+     *
+     * <p>格式：{pid}|PIPE|{yyyyMMddHHmm}，与合并粒度一致。
+     * 注意此键与旧版 {tubeExeId}|{shiftType}|{时间} 不兼容，上线需数据迁移。</p>
+     */
+    private String buildMergedHistoryKey(String pid, Date minuteTime) {
+        return pid + "|" + SYNC_TYPE_PIPE + "|"
+                + new SimpleDateFormat("yyyyMMddHHmm").format(minuteTime);
+    }
+
+    /**
+     * 收集某患者所有管道记录，按分钟合并。
+     *
+     * @param pid         患者 ID
+     * @param tubeExeDocs 该患者的 tubeExe 原始文档
+     * @param tubeViewMap tubeType → 字段配置
+     * @return mergeKey → 合并单元
+     */
+    private Map<String, MergeUnit> collectMergeUnits(String pid,
+                                                     List<Document> tubeExeDocs,
+                                                     Map<String, ConfigTubeView> tubeViewMap) {
+        Map<String, MergeUnit> units = new LinkedHashMap<>();
+
+        for (Document tubeExeDoc : tubeExeDocs) {
+            String tubeExeId = tubeExeDoc.getObjectId("_id") != null
+                    ? tubeExeDoc.getObjectId("_id").toHexString()
+                    : null;
+            String tubeType = tubeExeDoc.getString("name");
+            if (!StringUtils.hasText(tubeType)) {
+                continue;
+            }
+
+            ConfigTubeView tubeView = tubeViewMap.get(tubeType);
+            if (tubeView == null) {
+                log.debug("[TubeNursingSync] tubeType={} 无 configTubeView 配置，跳过", tubeType);
+                continue;
+            }
+
+            List<Document> recordList = getList(tubeExeDoc, "tubeRecordList");
+            if (recordList == null || recordList.isEmpty()) {
+                continue;
+            }
+
+            // 每个班次取第一条（沿用现有班次筛选逻辑）
+            Map<String, Document> firstByShift = selectFirstRecordByShift(recordList);
+
+            for (Map.Entry<String, Document> shiftEntry : firstByShift.entrySet()) {
+                String shiftType = shiftEntry.getKey();
+                Document record = shiftEntry.getValue();
+
+                Date rawTime = record.getDate("time");
+                if (rawTime == null) {
+                    continue;
+                }
+                Date minuteTime = TimeUtils.truncateToMinute(rawTime);
+
+                String desc = buildDesc(tubeType, tubeExeDoc.getDate("startTime"), record, tubeViewMap);
+                if (!StringUtils.hasText(desc)) {
+                    continue;
+                }
+
+                String mergeKey = buildMergeKey(pid, minuteTime);
+                MergeUnit unit = units.computeIfAbsent(mergeKey, k -> {
+                    MergeUnit u = new MergeUnit();
+                    u.minuteTime = minuteTime;
+                    u.shiftType = shiftType;
+                    return u;
+                });
+
+                // 排序键用 tubeType，保证「尿管+胃管」与「胃管+尿管」拼出相同内容
+                unit.parts.add(new DescPart(tubeType, desc));
+                if (tubeExeId != null) {
+                    unit.tubeExeIds.add(tubeExeId);
+                }
+                if (!StringUtils.hasText(unit.recordUserName)) {
+                    unit.recordUserName = record.getString("recordUserName");
+                    unit.recordUserId = record.getString("recordUser");
+                }
+            }
+        }
+        return units;
+    }
+
+    /**
+     * 将合并单元写入 nurseRecords，并维护 nurseRecordsHistory。
+     */
+    private void persistMergeUnits(String pid,
+                                   String patientName,
+                                   Map<String, MergeUnit> units,
+                                   Map<String, NurseRecordsHistory> historyMap,
+                                   AtomicInteger synced,
+                                   AtomicInteger skipped,
+                                   AtomicInteger updated,
+                                   AtomicInteger failed) {
+
+        for (MergeUnit unit : units.values()) {
+            try {
+                String historyKey = buildMergedHistoryKey(pid, unit.minuteTime);
+                String desc = unit.buildDesc();
+                String tubeExeIdJoined = String.join(",", unit.tubeExeIds);
+
+                NurseRecordsHistory existing = historyMap.get(historyKey);
+
+                if (existing == null) {
+                    NurseRecords created = createMergedNurseRecord(pid, patientName, unit, desc);
+                    NurseRecords saved = nurseRecordsRepository.insert(created);
+
+                    NurseRecordsHistory history = new NurseRecordsHistory();
+                    history.setPid(pid);
+                    history.setSyncType(SYNC_TYPE_PIPE);
+                    history.setTubeExeId(tubeExeIdJoined);
+                    history.setShiftType(unit.shiftType);
+                    history.setTubeRecordTime(unit.minuteTime);
+                    history.setNurseRecordId(saved.getId());
+                    history.setSyncContent(desc);
+                    history.setSyncTime(new Date());
+                    nurseRecordsHistoryRepository.insert(history);
+
+                    synced.incrementAndGet();
+                    log.info("[TubeNursingSync] 新增合并护理记录 pid={}, time={}, 管道数={}",
+                            pid, unit.minuteTime, unit.parts.size());
+                    continue;
+                }
+
+                NurseRecords nurseRecord = existing.getNurseRecordId() == null
+                        ? null
+                        : nurseRecordsRepository.findById(existing.getNurseRecordId()).orElse(null);
+
+                if (nurseRecord == null) {
+                    // 护理记录已被删除，重建并回填 id
+                    NurseRecords recreated = createMergedNurseRecord(pid, patientName, unit, desc);
+                    NurseRecords saved = nurseRecordsRepository.insert(recreated);
+                    existing.setNurseRecordId(saved.getId());
+                    existing.setSyncContent(desc);
+                    existing.setTubeExeId(tubeExeIdJoined);
+                    existing.setTubeRecordTime(unit.minuteTime);
+                    existing.setSyncTime(new Date());
+                    nurseRecordsHistoryRepository.save(existing);
+                    synced.incrementAndGet();
+                    log.warn("[TubeNursingSync] 护理记录已丢失，重建 pid={}, time={}", pid, unit.minuteTime);
+                    continue;
+                }
+
+                boolean contentSame = Objects.equals(existing.getSyncContent(), desc);
+                boolean timeSame = Objects.equals(nurseRecord.getTime(), unit.minuteTime);
+
+                if (contentSame && timeSame) {
+                    skipped.incrementAndGet();
+                    continue;
+                }
+
+                // 内容或时间有变化 → 更新（timeSame=false 用于抹掉历史遗留的带秒时间）
+                nurseRecord.setDesc(desc);
+                nurseRecord.setTime(unit.minuteTime);
+                nurseRecordsRepository.save(nurseRecord);
+
+                existing.setSyncContent(desc);
+                existing.setTubeExeId(tubeExeIdJoined);
+                existing.setTubeRecordTime(unit.minuteTime);
+                existing.setSyncTime(new Date());
+                nurseRecordsHistoryRepository.save(existing);
+
+                updated.incrementAndGet();
+                log.info("[TubeNursingSync] 更新合并护理记录 pid={}, time={}, 内容变更={}, 时间变更={}",
+                        pid, unit.minuteTime, !contentSame, !timeSame);
+
+            } catch (Exception e) {
+                failed.incrementAndGet();
+                log.error("[TubeNursingSync] 合并记录同步失败 pid={}, time={}", pid, unit.minuteTime, e);
+            }
+        }
+    }
+
+    /**
+     * 构建合并后的护理记录。
+     */
+    private NurseRecords createMergedNurseRecord(String pid,
+                                                 String patientName,
+                                                 MergeUnit unit,
+                                                 String desc) {
+        NurseRecords nurseRecord = new NurseRecords();
+        nurseRecord.setPid(pid);
+        nurseRecord.setName(patientName);
+        nurseRecord.setUsername(unit.recordUserName);
+        nurseRecord.setUserId(unit.recordUserId);
+        nurseRecord.setDesc(desc);
+        nurseRecord.setTime(unit.minuteTime);
+        nurseRecord.setCreateTime(new Date());
+        nurseRecord.setValid(true);
+        nurseRecord.setAutoSyn(true);
+        nurseRecord.setUseTimes(0);
+        nurseRecord.setDrugExeManualFlag(false);
+        return nurseRecord;
+    }
+
+    /**
+     * 拼接护理记录描述（单条管道）。
      */
     private String buildDesc(String tubeName, Date startTime,
                               Document recordDoc, Map<String, ConfigTubeView> configMap) {
@@ -389,24 +552,4 @@ public class TubeNursingSyncService {
         return sb.toString();
     }
 
-    /**
-     * 创建护理记录对象。
-     */
-    private NurseRecords createNurseRecord(String pid, String patientName,
-                                            String tubeId, String tubeName,
-                                            Document recordDoc, String desc) {
-        NurseRecords nurseRecord = new NurseRecords();
-        nurseRecord.setPid(pid);
-        nurseRecord.setName(patientName);
-        nurseRecord.setUsername(recordDoc.getString("recordUserName"));
-        nurseRecord.setUserId(recordDoc.getString("recordUser"));
-        nurseRecord.setDesc(desc);
-        nurseRecord.setTime(recordDoc.getDate("time"));
-        nurseRecord.setCreateTime(new Date());
-        nurseRecord.setValid(true);
-        nurseRecord.setAutoSyn(true);
-        nurseRecord.setUseTimes(0);
-        nurseRecord.setDrugExeManualFlag(false);
-        return nurseRecord;
-    }
 }
