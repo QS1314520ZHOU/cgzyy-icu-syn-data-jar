@@ -44,7 +44,14 @@ public class FirstAdmissionAssessmentSyncProperties {
             "param_tengTong_score",
             "param_yaChuang_score",
             "param_score_adl",
-            "param_score_unPlannedCGZYY"
+            "param_score_unPlannedCGZYY",
+            "param_nibp_s",
+            "param_nibp_d",
+            "param_T",
+            "param_脉搏",
+            "param_HR",
+            "param_resp",
+            "param_Yishi"
     );
 
     /**

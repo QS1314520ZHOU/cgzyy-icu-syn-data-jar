@@ -28,7 +28,8 @@ class FirstAssessmentSourceSelectorTest {
     private static final String DEP_OPT_MILD = "opt_dep_002";
     private static final String DEP_OPT_MODERATE = "opt_dep_003";
     private static final String DEP_OPT_SEVERE = "opt_dep_004";
-    private static final String FALL_FIELD = "dieDaoPingGu";
+    private static final String FALL_FIELD_1 = "lcpdf";
+    private static final String FALL_FIELD_2 = "mpff";
     private static final String FALL_OPT_CLINICAL = "opt_fall_clinical";
     private static final String FALL_OPT_MORSE = "opt_fall_morse";
 
@@ -36,19 +37,19 @@ class FirstAssessmentSourceSelectorTest {
     void setUp() {
         props = new FirstAdmissionAssessmentSyncProperties();
 
-        // 配置 formOptionConfig
+        // 配置 formOptionConfig（key 使用英文，与 mapChineseToEnglishKey 匹配）
         FormOptionConfig config = new FormOptionConfig();
         config.setDependencyField(DEP_FIELD);
         config.setDependencyOptions(new LinkedHashMap<String, String>() {{
-            put("无依赖", DEP_OPT_NONE);
-            put("轻度依赖", DEP_OPT_MILD);
-            put("中度依赖", DEP_OPT_MODERATE);
-            put("重度依赖", DEP_OPT_SEVERE);
+            put("NONE", DEP_OPT_NONE);
+            put("MILD", DEP_OPT_MILD);
+            put("MODERATE", DEP_OPT_MODERATE);
+            put("SEVERE", DEP_OPT_SEVERE);
         }});
-        config.setFallMethodField(FALL_FIELD);
+        config.setFallMethodField(FALL_FIELD_1 + "," + FALL_FIELD_2);
         config.setFallMethodOptions(new LinkedHashMap<String, String>() {{
-            put("临床判定法", FALL_OPT_CLINICAL);
-            put("Morse评分量表", FALL_OPT_MORSE);
+            put("CLINICAL", FALL_OPT_CLINICAL);
+            put("MORSE", FALL_OPT_MORSE);
         }});
 
         props.setFormOptionConfigs(new LinkedHashMap<>());
@@ -308,10 +309,9 @@ class FirstAssessmentSourceSelectorTest {
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", adl));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
-        // 分数写入 shzlnl
         assertEquals("90", result.get("shzlnl"));
-        // 选项编码写入独立的 dependencyField
-        assertEquals(Collections.singletonList(DEP_OPT_NONE), result.get(DEP_FIELD));
+        // 硬编码逻辑：无依赖 → shzlnl1 = ["wuyilai"]
+        assertEquals(Collections.singletonList("wuyilai"), result.get("shzlnl1"));
     }
 
     @Test
@@ -321,7 +321,8 @@ class FirstAssessmentSourceSelectorTest {
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", adl));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
         assertEquals("90", result.get("shzlnl"));
-        assertEquals(Collections.singletonList(DEP_OPT_MILD), result.get(DEP_FIELD));
+        // 硬编码逻辑：轻度依赖 → shzlnl2 = ["qingduyilai"]
+        assertEquals(Collections.singletonList("qingduyilai"), result.get("shzlnl2"));
     }
 
     @Test
@@ -331,7 +332,8 @@ class FirstAssessmentSourceSelectorTest {
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", adl));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
         assertEquals("60", result.get("shzlnl"));
-        assertEquals(Collections.singletonList(DEP_OPT_MODERATE), result.get(DEP_FIELD));
+        // 硬编码逻辑：中度依赖 → shzlnl3 = ["zhongduyilai"]
+        assertEquals(Collections.singletonList("zhongduyilai"), result.get("shzlnl3"));
     }
 
     @Test
@@ -341,14 +343,15 @@ class FirstAssessmentSourceSelectorTest {
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", adl));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
         assertEquals("20", result.get("shzlnl"));
-        assertEquals(Collections.singletonList(DEP_OPT_SEVERE), result.get(DEP_FIELD));
+        // 硬编码逻辑：重度依赖 → shzlnl4 = ["zhongduyilai"]
+        assertEquals(Collections.singletonList("zhongduyilai"), result.get("shzlnl4"));
     }
 
     @Test
     void candidate_dghtScoreOnly() {
-        Bedside dght = buildBedside("p1", "param_score_dght", "8（高风险）",
+        Bedside dght = buildBedside("p1", "param_score_unPlannedCGZYY", "8（高风险）",
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
-        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_dght", dght));
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_unPlannedCGZYY", dght));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
         assertEquals("8", result.get("dght"));
     }
@@ -376,7 +379,7 @@ class FirstAssessmentSourceSelectorTest {
         }});
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        assertEquals(Collections.singletonList(FALL_OPT_CLINICAL), result.get(FALL_FIELD));
+        assertEquals(Collections.singletonList(FALL_OPT_CLINICAL), result.get(FALL_FIELD_1));
     }
 
     @Test
@@ -388,7 +391,8 @@ class FirstAssessmentSourceSelectorTest {
         }});
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        assertEquals(Collections.singletonList(FALL_OPT_MORSE), result.get(FALL_FIELD));
+        // Morse 写入第二个字段 (mpff)
+        assertEquals(Collections.singletonList(FALL_OPT_MORSE), result.get(FALL_FIELD_2));
     }
 
     @Test
@@ -401,11 +405,9 @@ class FirstAssessmentSourceSelectorTest {
         }});
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        List<?> methods = (List<?>) result.get(FALL_FIELD);
-        assertNotNull(methods);
-        assertEquals(2, methods.size());
-        assertTrue(methods.contains(FALL_OPT_CLINICAL));
-        assertTrue(methods.contains(FALL_OPT_MORSE));
+        // 临床判定法 → lcpdf, Morse → mpff
+        assertEquals(Collections.singletonList(FALL_OPT_CLINICAL), result.get(FALL_FIELD_1));
+        assertEquals(Collections.singletonList(FALL_OPT_MORSE), result.get(FALL_FIELD_2));
     }
 
     @Test
@@ -414,7 +416,7 @@ class FirstAssessmentSourceSelectorTest {
         FormOptionConfig config = new FormOptionConfig();
         config.setDependencyField(DEP_FIELD);
         config.setDependencyOptions(new LinkedHashMap<String, String>() {{
-            put("无依赖", DEP_OPT_NONE);
+            put("NONE", DEP_OPT_NONE);
         }});
         // fallMethodField 未配置
         noFallProps.setFormOptionConfigs(Map.of(FORM_CODE, config));
@@ -427,16 +429,16 @@ class FirstAssessmentSourceSelectorTest {
         }});
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = noFallSelector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        assertNull(result.get(FALL_FIELD));
+        assertNull(result.get(FALL_FIELD_1));
     }
 
     @Test
     void candidate_dependencyNotConfigured_skipped() {
         FirstAdmissionAssessmentSyncProperties noDepProps = new FirstAdmissionAssessmentSyncProperties();
         FormOptionConfig config = new FormOptionConfig();
-        config.setFallMethodField(FALL_FIELD);
+        config.setFallMethodField(FALL_FIELD_1);
         config.setFallMethodOptions(new LinkedHashMap<String, String>() {{
-            put("临床判定法", FALL_OPT_CLINICAL);
+            put("CLINICAL", FALL_OPT_CLINICAL);
         }});
         // dependencyField 未配置
         noDepProps.setFormOptionConfigs(new LinkedHashMap<>());
@@ -459,7 +461,8 @@ class FirstAssessmentSourceSelectorTest {
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", adl));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
-        assertEquals(Collections.singletonList(DEP_OPT_MILD), result.get(DEP_FIELD));
+        // 硬编码逻辑：轻度依赖 → shzlnl2 = ["qingduyilai"]
+        assertEquals(Collections.singletonList("qingduyilai"), result.get("shzlnl2"));
     }
 
     // ── 两个 formCode 不同编码 ────────────────────────────────────────
@@ -470,13 +473,13 @@ class FirstAssessmentSourceSelectorTest {
         FormOptionConfig config2 = new FormOptionConfig();
         config2.setDependencyField("depField2");
         config2.setDependencyOptions(new LinkedHashMap<String, String>() {{
-            put("无依赖", "dep2_none");
-            put("轻度依赖", "dep2_mild");
+            put("NONE", "dep2_none");
+            put("MILD", "dep2_mild");
         }});
         config2.setFallMethodField("fallField2");
         config2.setFallMethodOptions(new LinkedHashMap<String, String>() {{
-            put("临床判定法", "fall2_clinical");
-            put("Morse评分量表", "fall2_morse");
+            put("CLINICAL", "fall2_clinical");
+            put("MORSE", "fall2_morse");
         }});
 
         props.getFormOptionConfigs().put("ruyuanhulipinggudan", config2);
@@ -485,15 +488,15 @@ class FirstAssessmentSourceSelectorTest {
                 parseDate("2026-08-01T11:00:00"), new Date(), "id1");
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_score_adl", adl));
 
-        // formCode=zhuanruhulipinggudan
+        // formCode=zhuanruhulipinggudan → 硬编码逻辑：轻度依赖 → shzlnl2
         Map<String, Object> result1 = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
                 "zhuanruhulipinggudan");
-        assertEquals(Collections.singletonList(DEP_OPT_MILD), result1.get(DEP_FIELD));
+        assertEquals(Collections.singletonList("qingduyilai"), result1.get("shzlnl2"));
 
-        // formCode=ruyuanhulipinggudan
+        // formCode=ruyuanhulipinggudan → 同样硬编码逻辑
         Map<String, Object> result2 = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(),
                 "ruyuanhulipinggudan");
-        assertEquals(Collections.singletonList("dep2_mild"), result2.get("depField2"));
+        assertEquals(Collections.singletonList("qingduyilai"), result2.get("shzlnl2"));
     }
 
     // ── 已有值相同但顺序不同，不产生数据库更新 ────────────────────────
@@ -508,13 +511,9 @@ class FirstAssessmentSourceSelectorTest {
         }});
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        List<?> methods = (List<?>) result.get(FALL_FIELD);
-        assertNotNull(methods);
-        // 排序后比较
-        List<String> sorted = new ArrayList<>();
-        for (Object m : methods) sorted.add((String) m);
-        Collections.sort(sorted);
-        assertEquals(Arrays.asList(FALL_OPT_CLINICAL, FALL_OPT_MORSE), sorted);
+        // 临床判定法 → lcpdf, Morse → mpff（分别写入不同字段）
+        assertEquals(Collections.singletonList(FALL_OPT_CLINICAL), result.get(FALL_FIELD_1));
+        assertEquals(Collections.singletonList(FALL_OPT_MORSE), result.get(FALL_FIELD_2));
     }
 
     // ── 未配置真实编码时不写入、不猜测 ──────────────────────────────
@@ -542,7 +541,7 @@ class FirstAssessmentSourceSelectorTest {
         assertEquals("90", result.get("shzlnl"));
         // 但选项字段未配置，不写入选项编码
         assertNull(result.get(DEP_FIELD));
-        assertNull(result.get(FALL_FIELD));
+        assertNull(result.get(FALL_FIELD_1));
     }
 
     @Test
@@ -556,7 +555,7 @@ class FirstAssessmentSourceSelectorTest {
         score.setPatientFallDangerFactorV2(factor);
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        assertNull(result.get(FALL_FIELD));
+        assertNull(result.get(FALL_FIELD_1));
     }
 
     @Test
@@ -590,7 +589,148 @@ class FirstAssessmentSourceSelectorTest {
         }});
         Map<String, Score> scoreMap = Map.of("p1", score);
         Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        assertTrue(result.get(FALL_FIELD) instanceof List);
+        // Morse → 第二个字段 (mpff)
+        assertTrue(result.get(FALL_FIELD_2) instanceof List);
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 生命体征：xy / tw / mb / hx
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    void vitalSigns_xy() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", new LinkedHashMap<>(Map.of(
+                "param_nibp_s", buildBedside("p1", "param_nibp_s", "120", parseDate("2026-08-01T11:00:00"), new Date(), "id1"),
+                "param_nibp_d", buildBedside("p1", "param_nibp_d", "80", parseDate("2026-08-01T11:00:00"), new Date(), "id2")
+        )));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("120", result.get("nibp_s"));
+        assertEquals("80", result.get("nibp_d"));
+    }
+
+    @Test
+    void vitalSigns_tw() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_T", buildBedside("p1", "param_T", "36.5", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("36.5", result.get("tw"));
+    }
+
+    @Test
+    void vitalSigns_mb_pulseFirst() {
+        // 有脉搏时优先脉搏
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", new LinkedHashMap<>(Map.of(
+                "param_脉搏", buildBedside("p1", "param_脉搏", "72", parseDate("2026-08-01T11:00:00"), new Date(), "id1"),
+                "param_HR", buildBedside("p1", "param_HR", "75", parseDate("2026-08-01T11:00:00"), new Date(), "id2")
+        )));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("72", result.get("mb"));
+    }
+
+    @Test
+    void vitalSigns_mb_fallbackToHr() {
+        // 无脉搏时兜底心率
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_HR", buildBedside("p1", "param_HR", "75", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("75", result.get("mb"));
+    }
+
+    @Test
+    void vitalSigns_mb_none() {
+        // 两者都没有时不写入
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), Collections.emptyMap(), FORM_CODE);
+        assertNull(result.get("mb"));
+    }
+
+    @Test
+    void vitalSigns_hx() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_resp", buildBedside("p1", "param_resp", "18", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("18", result.get("hx"));
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    // 意识状态：yszt1 + yszt8
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    void consciousness_qingchu() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "清楚", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("qingchu", result.get("yszt1"));
+        assertNull(result.get("yszt8"));
+    }
+
+    @Test
+    void consciousness_hunshui() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "昏睡", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("hunshui", result.get("yszt1"));
+        assertNull(result.get("yszt8"));
+    }
+
+    @Test
+    void consciousness_shishui() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "嗜睡", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("shishui", result.get("yszt1"));
+    }
+
+    @Test
+    void consciousness_qingduhunmi() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "轻度昏迷", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("qingduhunmi", result.get("yszt1"));
+    }
+
+    @Test
+    void consciousness_zhongduhunmi() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "中度昏迷", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("zhongduhunmi", result.get("yszt1"));
+    }
+
+    @Test
+    void consciousness_shenduhunmi() {
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "深度昏迷", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("shenduhunmi", result.get("yszt1"));
+    }
+
+    @Test
+    void consciousness_qita_withYszt8() {
+        // 不匹配的值：yszt1=qita, yszt8=原始中文
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_Yishi", buildBedside("p1", "param_Yishi", "谵妄", parseDate("2026-08-01T11:00:00"), new Date(), "id1")
+        ));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
+        assertEquals("qita", result.get("yszt1"));
+        assertEquals("谵妄", result.get("yszt8"));
+    }
+
+    @Test
+    void consciousness_null_noWrite() {
+        // param_Yishi 不存在时不写入
+        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), Collections.emptyMap(), FORM_CODE);
+        assertNull(result.get("yszt1"));
+        assertNull(result.get("yszt8"));
     }
 
     // ══════════════════════════════════════════════════════════════════

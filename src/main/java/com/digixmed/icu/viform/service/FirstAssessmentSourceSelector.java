@@ -47,6 +47,18 @@ public class FirstAssessmentSourceSelector {
         BEDSIDE_CODE_MAPPING.put("param_tengTong_score", new String[]{"ttpf"});
     }
 
+    // ── 意识状态：中文 → 拼音编码 ────────────────────────────────────
+
+    private static final Map<String, String> CONSCIOUSNESS_MAP = new LinkedHashMap<>();
+    static {
+        CONSCIOUSNESS_MAP.put("清楚",   "qingchu");
+        CONSCIOUSNESS_MAP.put("昏睡",   "hunshui");
+        CONSCIOUSNESS_MAP.put("嗜睡",   "shishui");
+        CONSCIOUSNESS_MAP.put("轻度昏迷", "qingduhunmi");
+        CONSCIOUSNESS_MAP.put("中度昏迷", "zhongduhunmi");
+        CONSCIOUSNESS_MAP.put("深度昏迷", "shenduhunmi");
+    }
+
     private final FirstAdmissionAssessmentSyncProperties properties;
 
     /**
@@ -220,7 +232,13 @@ public class FirstAssessmentSourceSelector {
             }
         }
 
-        // 1c. 生活自理能力：根据依赖程度写入选项编码（List<String>）
+        // 1c. 生命体征：xy(nibp_s/nibp_d)、tw、mb(优先脉搏)、hx
+        resolveVitalSigns(pidBedside, candidates);
+
+        // 1d. 意识状态：param_Yishi → yszt1(编码) + yszt8(不匹配时的原始值)
+        resolveConsciousness(pidBedside, candidates);
+
+        // 1e. 生活自理能力：根据依赖程度写入选项编码（List<String>）
         Bedside adlSource = pidBedside.get("param_score_adl");
         if (adlSource != null && optionConfig != null) {
             resolveAndPutDependencyOption(formCode, adlSource.getStrVal(), candidates);
@@ -245,6 +263,78 @@ public class FirstAssessmentSourceSelector {
         }
 
         return candidates;
+    }
+
+    // ==================== 生命体征解析 ====================
+
+    /**
+     * 解析生命体征：xy(血压)、tw(体温)、mb(脉搏/心率)、hx(呼吸)。
+     *
+     * <ul>
+     *   <li>xy → param_nibp_s(收缩压) + param_nibp_d(舒张压)</li>
+     *   <li>tw → param_T(体温)</li>
+     *   <li>mb → 优先 param_脉搏，无值时兜底 param_HR</li>
+     *   <li>hx → param_resp(呼吸)</li>
+     * </ul>
+     */
+    private void resolveVitalSigns(Map<String, Bedside> pidBedside,
+                                    Map<String, Object> candidates) {
+        // 血压：收缩压 + 舒张压
+        Bedside nibpS = pidBedside.get("param_nibp_s");
+        if (nibpS != null && StringUtils.hasText(nibpS.getStrVal())) {
+            candidates.put("nibp_s", nibpS.getStrVal().trim());
+        }
+        Bedside nibpD = pidBedside.get("param_nibp_d");
+        if (nibpD != null && StringUtils.hasText(nibpD.getStrVal())) {
+            candidates.put("nibp_d", nibpD.getStrVal().trim());
+        }
+
+        // 体温
+        Bedside tw = pidBedside.get("param_T");
+        if (tw != null && StringUtils.hasText(tw.getStrVal())) {
+            candidates.put("tw", tw.getStrVal().trim());
+        }
+
+        // 脉搏：优先 param_脉搏，无值时兜底 param_HR
+        Bedside pulse = pidBedside.get("param_脉搏");
+        Bedside hr = pidBedside.get("param_HR");
+        if (pulse != null && StringUtils.hasText(pulse.getStrVal())) {
+            candidates.put("mb", pulse.getStrVal().trim());
+        } else if (hr != null && StringUtils.hasText(hr.getStrVal())) {
+            candidates.put("mb", hr.getStrVal().trim());
+        }
+
+        // 呼吸
+        Bedside resp = pidBedside.get("param_resp");
+        if (resp != null && StringUtils.hasText(resp.getStrVal())) {
+            candidates.put("hx", resp.getStrVal().trim());
+        }
+    }
+
+    /**
+     * 解析意识状态：param_Yishi → yszt1(拼音编码) + yszt8(不匹配时的原始中文)。
+     *
+     * <p>匹配表：清楚→qingchu, 昏睡→hunshui, 嗜睡→shishui,
+     * 轻度昏迷→qingduhunmi, 中度昏迷→zhongduhunmi, 深度昏迷→shenduhunmi。</p>
+     * <p>不匹配时：yszt1="qita", yszt8=原始中文值（如"谵妄"）。</p>
+     */
+    private void resolveConsciousness(Map<String, Bedside> pidBedside,
+                                       Map<String, Object> candidates) {
+        Bedside yishi = pidBedside.get("param_Yishi");
+        if (yishi == null || !StringUtils.hasText(yishi.getStrVal())) {
+            return;
+        }
+
+        String raw = yishi.getStrVal().trim();
+        String code = CONSCIOUSNESS_MAP.get(raw);
+
+        if (code != null) {
+            candidates.put("yszt1", code);
+        } else {
+            candidates.put("yszt1", "qita");
+            candidates.put("yszt8", raw);
+            log.info("[FirstAssessmentSync] 意识状态 '{}' 未匹配已知值，yszt1=qita, yszt8={}", raw, raw);
+        }
     }
 
     // ==================== 选项解析 ====================
