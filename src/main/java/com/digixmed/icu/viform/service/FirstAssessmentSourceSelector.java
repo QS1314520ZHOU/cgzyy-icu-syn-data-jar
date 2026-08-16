@@ -181,6 +181,7 @@ public class FirstAssessmentSourceSelector {
                                                      Map<String, Map<String, Bedside>> bedsideMap,
                                                      Map<String, Score> scoreMap,
                                                      String formCode) {
+        log.info("[FirstAssessmentSync] buildCandidateValues pid={}, formCode={}", pid, formCode);
         Map<String, Object> candidates = new LinkedHashMap<>();
 
         // 获取当前 formCode 的选项配置
@@ -188,6 +189,7 @@ public class FirstAssessmentSourceSelector {
 
         // 1a. bedside 映射：SCORE_FIELD_MAPPING（只取数值分数，不含括号结论）
         Map<String, Bedside> pidBedside = bedsideMap.getOrDefault(pid, Collections.emptyMap());
+        log.info("[FirstAssessmentSync] pid={} bedside codes: {}", pid, pidBedside.keySet());
         for (Map.Entry<String, String> entry : SCORE_FIELD_MAPPING.entrySet()) {
             Bedside source = pidBedside.get(entry.getKey());
             if (source == null) continue;
@@ -262,6 +264,7 @@ public class FirstAssessmentSourceSelector {
             }
         }
 
+        log.info("[FirstAssessmentSync] pid={} 最终 candidates: {}", pid, candidates.keySet());
         return candidates;
     }
 
@@ -283,16 +286,25 @@ public class FirstAssessmentSourceSelector {
         Bedside nibpS = pidBedside.get("param_nibp_s");
         if (nibpS != null && StringUtils.hasText(nibpS.getStrVal())) {
             candidates.put("nibp_s", nibpS.getStrVal().trim());
+            log.debug("[FirstAssessmentSync] nibp_s 命中, val={}", nibpS.getStrVal().trim());
+        } else {
+            log.debug("[FirstAssessmentSync] nibp_s 未命中, bedside keys={}", pidBedside.keySet());
         }
         Bedside nibpD = pidBedside.get("param_nibp_d");
         if (nibpD != null && StringUtils.hasText(nibpD.getStrVal())) {
             candidates.put("nibp_d", nibpD.getStrVal().trim());
+            log.debug("[FirstAssessmentSync] nibp_d 命中, val={}", nibpD.getStrVal().trim());
+        } else {
+            log.debug("[FirstAssessmentSync] nibp_d 未命中, bedside keys={}", pidBedside.keySet());
         }
 
         // 体温
         Bedside tw = pidBedside.get("param_T");
         if (tw != null && StringUtils.hasText(tw.getStrVal())) {
             candidates.put("tw", tw.getStrVal().trim());
+            log.debug("[FirstAssessmentSync] tw 命中, val={}", tw.getStrVal().trim());
+        } else {
+            log.debug("[FirstAssessmentSync] tw 未命中, bedside keys={}", pidBedside.keySet());
         }
 
         // 脉搏：优先 param_脉搏，无值时兜底 param_HR
@@ -300,14 +312,21 @@ public class FirstAssessmentSourceSelector {
         Bedside hr = pidBedside.get("param_HR");
         if (pulse != null && StringUtils.hasText(pulse.getStrVal())) {
             candidates.put("mb", pulse.getStrVal().trim());
+            log.debug("[FirstAssessmentSync] mb 命中(脉搏), val={}", pulse.getStrVal().trim());
         } else if (hr != null && StringUtils.hasText(hr.getStrVal())) {
             candidates.put("mb", hr.getStrVal().trim());
+            log.debug("[FirstAssessmentSync] mb 命中(HR兜底), val={}", hr.getStrVal().trim());
+        } else {
+            log.debug("[FirstAssessmentSync] mb 未命中(脉搏和HR均无数据), bedside keys={}", pidBedside.keySet());
         }
 
         // 呼吸
         Bedside resp = pidBedside.get("param_resp");
         if (resp != null && StringUtils.hasText(resp.getStrVal())) {
             candidates.put("hx", resp.getStrVal().trim());
+            log.debug("[FirstAssessmentSync] hx 命中, val={}", resp.getStrVal().trim());
+        } else {
+            log.debug("[FirstAssessmentSync] hx 未命中, bedside keys={}", pidBedside.keySet());
         }
     }
 
@@ -322,6 +341,7 @@ public class FirstAssessmentSourceSelector {
                                        Map<String, Object> candidates) {
         Bedside yishi = pidBedside.get("param_Yishi");
         if (yishi == null || !StringUtils.hasText(yishi.getStrVal())) {
+            log.debug("[FirstAssessmentSync] 意识状态 param_Yishi 无数据, pidBedside keys={}", pidBedside.keySet());
             return;
         }
 
@@ -330,6 +350,7 @@ public class FirstAssessmentSourceSelector {
 
         if (code != null) {
             candidates.put("yszt1", code);
+            log.info("[FirstAssessmentSync] 意识状态: raw={}, mapped={}", raw, code);
         } else {
             candidates.put("yszt1", "qita");
             candidates.put("yszt8", raw);
