@@ -265,13 +265,16 @@ public class FirstAssessmentSourceSelector {
         // 2. score 映射（跌倒/坠床）
         Score score = scoreMap.get(pid);
         if (score != null) {
-            // morde: score.total → 规范化
-            if (score.getTotal() != null) {
-                candidates.put("morde", normalizeScoreTotal(score.getTotal()));
-            }
-            // morde2: score.conclusion
+            boolean isMorse = isMorseUsed(score);
+
+            // morde2: 风险结论（无论哪种方法都要赋值）
             if (score.getConclusion() != null && !score.getConclusion().trim().isEmpty()) {
                 candidates.put("morde2", score.getConclusion().trim());
+            }
+
+            // morde: 只有使用 Morse 评分法时才赋值分数
+            if (isMorse && score.getTotal() != null) {
+                candidates.put("morde", normalizeScoreTotal(score.getTotal()));
             }
 
             // 跌倒评估方法：收集所有适用方法的 option value
