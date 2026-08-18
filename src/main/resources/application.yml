@@ -134,7 +134,11 @@ bloodsugar-sync:
 first-assessment-sync:
   enabled: true
   timezone: Asia/Shanghai
-  scan-interval-ms: 300000
+  scan-interval-ms: 180000
+  batch-size: 30
+  fresh-duration-ms: 3600000      # 密集期时长：1小时
+  regular-interval-ms: 3600000    # 稳定期同步间隔：1小时
+  expire-duration-ms: 86400000    # 过期时长：24小时
   overwrite-existing: true
   update-only-when-changed: true
   score-type: patientFallDangerLJRMYY

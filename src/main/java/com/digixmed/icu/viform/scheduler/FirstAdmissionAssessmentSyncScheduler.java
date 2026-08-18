@@ -12,7 +12,13 @@ import org.springframework.stereotype.Component;
 /**
  * 首次入科评估同步调度器。
  *
- * <p>按 {@code first-assessment-sync.scan-interval-ms} 周期调用同步。</p>
+ * <p>以 3 分钟为固定轮询周期（{@code first-assessment-sync.scan-interval-ms}），
+ * 由同步服务根据患者入科时间动态决定是否处理：</p>
+ * <ul>
+ *   <li>入科 0~1 小时（密集期）：每次都同步</li>
+ *   <li>入科 1~24 小时（稳定期）：每小时同步一次</li>
+ *   <li>入科超过 24 小时（过期）：不再同步</li>
+ * </ul>
  */
 @Slf4j
 @Component
@@ -22,7 +28,7 @@ public class FirstAdmissionAssessmentSyncScheduler {
     private final FirstAdmissionAssessmentSyncProperties properties;
     private final FirstAdmissionAssessmentSyncService syncService;
 
-    @Scheduled(fixedDelayString = "${first-assessment-sync.scan-interval-ms:300000}")
+    @Scheduled(fixedDelayString = "${first-assessment-sync.scan-interval-ms:180000}")
     public void scheduledSync() {
         if (!properties.isEnabled()) {
             log.debug("[FirstAssessmentSync] 调度器已禁用，跳过");

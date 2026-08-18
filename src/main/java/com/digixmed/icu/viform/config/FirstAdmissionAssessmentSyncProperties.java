@@ -24,8 +24,34 @@ public class FirstAdmissionAssessmentSyncProperties {
     /** 时区 */
     private String timezone = "Asia/Shanghai";
 
-    /** 扫描间隔（毫秒） */
-    private long scanIntervalMs = 300_000;
+    /**
+     * 调度周期（毫秒），默认 3 分钟。
+     * <p>配合动态频次策略：密集期患者每次都同步，稳定期患者按 regularIntervalMs 间隔同步，过期患者跳过。</p>
+     */
+    private long scanIntervalMs = 180_000;
+
+    /** 每批处理的患者数量。避免一次性查询过多患者导致数据库压力过大。 */
+    private int batchSize = 30;
+
+    // ── 动态同步频次 ────────────────────────────────────────────
+
+    /**
+     * 入科后"密集期"时长（毫秒），默认 1 小时。
+     * <p>入科后 0 ~ 此时长内，每次调度（3分钟）都同步。</p>
+     */
+    private long freshDurationMs = 3_600_000;
+
+    /**
+     * 入科后"稳定期"同步间隔（毫秒），默认 1 小时。
+     * <p>入科超过密集期但未过期的患者，距上次同步达到此间隔才再次同步。</p>
+     */
+    private long regularIntervalMs = 3_600_000;
+
+    /**
+     * 入科过期时长（毫秒），默认 24 小时。
+     * <p>入科超过此时长后不再同步。</p>
+     */
+    private long expireDurationMs = 86_400_000;
 
     /** 目标值与源值不同时，用第一次评估源值更新目标值 */
     private boolean overwriteExisting = true;

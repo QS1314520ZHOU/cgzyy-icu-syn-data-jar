@@ -141,7 +141,7 @@ public class TubeNursingSyncService {
     }
 
     /**
-     * 执行全量同步。
+     * 执行全量同步（按患者分批处理，降低数据库压力）。
      */
     public SyncResult syncAllAdmittedPatients() {
         if (!running.compareAndSet(false, true)) {
@@ -169,32 +169,13 @@ public class TubeNursingSyncService {
                 return new SyncResult(0, 0, 0, 0, 0, 0);
             }
 
-            List<String> pids = patients.stream()
-                    .map(Patient::getId)
-                    .collect(Collectors.toList());
-
             // 构建 pid → patientName 映射
             Map<String, String> patientNameMap = new HashMap<>();
             for (Patient p : patients) {
                 patientNameMap.put(p.getId(), p.getName());
             }
 
-            // 2. 使用 MongoTemplate 查询管道护理记录（仅查询最近N天）
-            Calendar syncCalendar = Calendar.getInstance();
-            syncCalendar.add(Calendar.DAY_OF_MONTH, -properties.getSyncDays());
-            Date syncStartTime = syncCalendar.getTime();
-
-            Query tubeQuery = new Query();
-            tubeQuery.addCriteria(Criteria.where("pid").in(pids));
-            tubeQuery.addCriteria(Criteria.where("startTime").gte(syncStartTime));
-            List<Document> tubeExeDocs = smartCareMongoTemplate.find(tubeQuery, Document.class, "tubeExe");
-            log.info("[TubeNursingSync] tubeExe 命中: {} 条", tubeExeDocs.size());
-
-            if (tubeExeDocs.isEmpty()) {
-                return new SyncResult(totalPatients.get(), 0, 0, 0, 0, 0);
-            }
-
-            // 3. 查询管道配置
+            // 2. 查询管道配置（一次性，数据量小）
             List<ConfigTubeView> configViews = configTubeViewRepository.findByValidTrue();
             Map<String, ConfigTubeView> configMap = new HashMap<>();
             for (ConfigTubeView config : configViews) {
@@ -202,37 +183,83 @@ public class TubeNursingSyncService {
             }
             log.info("[TubeNursingSync] configTubeView 命中: {} 条", configViews.size());
 
-            // 4. 批量查询已有的同步历史（合并键）
-            List<NurseRecordsHistory> histories = nurseRecordsHistoryRepository.findByPidIn(pids);
-            Map<String, NurseRecordsHistory> historyMap = histories.stream()
-                    .filter(h -> SYNC_TYPE_PIPE.equals(h.getSyncType()))
-                    .filter(h -> h.getTubeRecordTime() != null)
-                    .collect(Collectors.toMap(
-                            h -> buildMergedHistoryKey(h.getPid(), TimeUtils.truncateToMinute(h.getTubeRecordTime())),
-                            h -> h,
-                            (a, b) -> a.getSyncTime() != null && b.getSyncTime() != null
-                                    && a.getSyncTime().after(b.getSyncTime()) ? a : b));
-            log.info("[TubeNursingSync] nurseRecordsHistory 命中: {} 条", histories.size());
+            // 3. 计算回溯时间
+            Calendar syncCalendar = Calendar.getInstance();
+            syncCalendar.add(Calendar.DAY_OF_MONTH, -properties.getSyncDays());
+            Date syncStartTime = syncCalendar.getTime();
 
-            // 5. 按患者分组处理
-            Map<String, List<Document>> tubeExeByPid = new HashMap<>();
-            for (Document doc : tubeExeDocs) {
-                String pid = doc.getString("pid");
-                tubeExeByPid.computeIfAbsent(pid, k -> new ArrayList<>()).add(doc);
-            }
+            // 4. 按批次处理患者
+            int batchSize = properties.getBatchSize();
+            List<List<String>> pidBatches = partition(
+                    patients.stream().map(Patient::getId).collect(Collectors.toList()), batchSize);
+            int totalBatches = pidBatches.size();
+            log.info("[TubeNursingSync] 分批处理: 患者数={}, 批大小={}, 总批数={}",
+                    patients.size(), batchSize, totalBatches);
 
-            for (Map.Entry<String, List<Document>> entry : tubeExeByPid.entrySet()) {
-                String pid = entry.getKey();
-                List<Document> tubeExeDocs4Pid = entry.getValue();
-                String patientName = patientNameMap.getOrDefault(pid, "");
+            for (int i = 0; i < pidBatches.size(); i++) {
+                List<String> batchPids = pidBatches.get(i);
+                int batchNo = i + 1;
+                log.info("[TubeNursingSync] 批次 {}/{} 开始, 患者数={}", batchNo, totalBatches, batchPids.size());
 
                 try {
-                    Map<String, MergeUnit> units = collectMergeUnits(pid, tubeExeDocs4Pid, configMap);
-                    persistMergeUnits(pid, patientName, units, historyMap,
-                            syncedRecords, skippedRecords, updatedRecords, failedRecords);
+                    // 按批次查询 tubeExe
+                    Query tubeQuery = new Query();
+                    tubeQuery.addCriteria(Criteria.where("pid").in(batchPids));
+                    tubeQuery.addCriteria(Criteria.where("startTime").gte(syncStartTime));
+                    List<Document> tubeExeDocs = smartCareMongoTemplate.find(tubeQuery, Document.class, "tubeExe");
+
+                    if (tubeExeDocs.isEmpty()) {
+                        log.info("[TubeNursingSync] 批次 {}/{} tubeExe 无数据，跳过", batchNo, totalBatches);
+                        continue;
+                    }
+
+                    // 按批次查询历史
+                    List<NurseRecordsHistory> histories = nurseRecordsHistoryRepository.findByPidIn(batchPids);
+                    Map<String, NurseRecordsHistory> historyMap = histories.stream()
+                            .filter(h -> SYNC_TYPE_PIPE.equals(h.getSyncType()))
+                            .filter(h -> h.getTubeRecordTime() != null)
+                            .collect(Collectors.toMap(
+                                    h -> buildMergedHistoryKey(h.getPid(), TimeUtils.truncateToMinute(h.getTubeRecordTime())),
+                                    h -> h,
+                                    (a, b) -> a.getSyncTime() != null && b.getSyncTime() != null
+                                            && a.getSyncTime().after(b.getSyncTime()) ? a : b));
+
+                    // 按患者分组处理
+                    Map<String, List<Document>> tubeExeByPid = new HashMap<>();
+                    for (Document doc : tubeExeDocs) {
+                        String pid = doc.getString("pid");
+                        tubeExeByPid.computeIfAbsent(pid, k -> new ArrayList<>()).add(doc);
+                    }
+
+                    for (Map.Entry<String, List<Document>> entry : tubeExeByPid.entrySet()) {
+                        String pid = entry.getKey();
+                        List<Document> tubeExeDocs4Pid = entry.getValue();
+                        String patientName = patientNameMap.getOrDefault(pid, "");
+
+                        try {
+                            Map<String, MergeUnit> units = collectMergeUnits(pid, tubeExeDocs4Pid, configMap);
+                            persistMergeUnits(pid, patientName, units, historyMap,
+                                    syncedRecords, skippedRecords, updatedRecords, failedRecords);
+                        } catch (Exception e) {
+                            log.error("[TubeNursingSync] 处理患者管道异常 pid={}", pid, e);
+                            failedRecords.incrementAndGet();
+                        }
+                    }
+
+                    log.info("[TubeNursingSync] 批次 {}/{} 完成", batchNo, totalBatches);
+
                 } catch (Exception e) {
-                    log.error("[TubeNursingSync] 处理患者管道异常 pid={}", pid, e);
-                    failedRecords.incrementAndGet();
+                    log.error("[TubeNursingSync] 批次 {}/{} 异常", batchNo, totalBatches, e);
+                }
+
+                // 批间冷却
+                if (batchNo < totalBatches) {
+                    try {
+                        Thread.sleep(500);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
+                    }
                 }
             }
 
@@ -249,6 +276,17 @@ public class TubeNursingSyncService {
         } finally {
             running.set(false);
         }
+    }
+
+    /**
+     * 将列表按指定大小分组。
+     */
+    private <T> List<List<T>> partition(List<T> list, int size) {
+        List<List<T>> result = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            result.add(list.subList(i, Math.min(i + size, list.size())));
+        }
+        return result;
     }
 
     /**

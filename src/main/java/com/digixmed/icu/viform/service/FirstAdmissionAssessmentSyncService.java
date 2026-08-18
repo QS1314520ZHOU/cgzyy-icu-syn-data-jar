@@ -20,6 +20,7 @@ import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -54,6 +55,9 @@ public class FirstAdmissionAssessmentSyncService {
 
     /** 防重入锁 */
     private final AtomicBoolean running = new AtomicBoolean(false);
+
+    /** 每个患者上次同步时间（用于动态频次控制） */
+    private final ConcurrentHashMap<String, Date> lastSyncTimeMap = new ConcurrentHashMap<>();
 
     /** 配置校验标记（只执行一次） */
     private volatile boolean configValidated = false;
@@ -166,7 +170,7 @@ public class FirstAdmissionAssessmentSyncService {
     }
 
     /**
-     * 执行全量同步。
+     * 执行全量同步（按患者分批处理，降低数据库压力）。
      */
     public SyncResult syncAllAdmittedPatients() {
         if (!running.compareAndSet(false, true)) {
@@ -193,15 +197,57 @@ public class FirstAdmissionAssessmentSyncService {
             }
 
             // 1. 批量查询在院患者
-            List<Patient> patients = patientRepository.findByStatus(STATUS_ADMITTED);
-            patients = patients.stream()
+            List<Patient> allPatients = patientRepository.findByStatus(STATUS_ADMITTED);
+            allPatients = allPatients.stream()
                     .filter(p -> p.getIcuAdmissionTime() != null && StringUtils.hasText(p.getId()))
                     .collect(Collectors.toList());
+
+            if (allPatients.isEmpty()) {
+                return new SyncResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            }
+
+            // 2. 动态频次过滤：根据入科时间分层
+            Date now = new Date();
+            long freshDurationMs = properties.getFreshDurationMs();
+            long regularIntervalMs = properties.getRegularIntervalMs();
+            long expireDurationMs = properties.getExpireDurationMs();
+
+            List<Patient> patients = new ArrayList<>();
+            int skippedExpired = 0;
+            int skippedRegularCooldown = 0;
+
+            for (Patient p : allPatients) {
+                long admissionAgeMs = now.getTime() - p.getIcuAdmissionTime().getTime();
+
+                // 已过期：入科超过 expireDurationMs，不再同步
+                if (admissionAgeMs >= expireDurationMs) {
+                    skippedExpired++;
+                    continue;
+                }
+
+                // 密集期：入科后 0 ~ freshDurationMs，每次都同步
+                if (admissionAgeMs < freshDurationMs) {
+                    patients.add(p);
+                    continue;
+                }
+
+                // 稳定期：入科后 freshDurationMs ~ expireDurationMs，按 regularIntervalMs 间隔同步
+                Date lastSync = lastSyncTimeMap.get(p.getId());
+                if (lastSync == null || (now.getTime() - lastSync.getTime()) >= regularIntervalMs) {
+                    patients.add(p);
+                } else {
+                    skippedRegularCooldown++;
+                }
+            }
+
             totalPatients.set(patients.size());
-            log.info("[FirstAssessmentSync] 开始同步 admittedPatients={}", patients.size());
+            log.info("[FirstAssessmentSync] 动态频次过滤: 总在院={}, 密集期={}, 稳定期={}, 过期跳过={}, 冷却跳过={}",
+                    allPatients.size(), patients.size() - skippedRegularCooldown,
+                    skippedRegularCooldown, skippedExpired, skippedRegularCooldown);
 
             if (patients.isEmpty()) {
-                return new SyncResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+                log.info("[FirstAssessmentSync] 本轮无需同步的患者，跳过");
+                return new SyncResult(allPatients.size(), 0, 0, 0, 0, 0, 0, 0, 0, 0);
             }
 
             Map<String, Date> admissionTimes = new HashMap<>();
@@ -209,82 +255,105 @@ public class FirstAdmissionAssessmentSyncService {
                 admissionTimes.put(p.getId(), p.getIcuAdmissionTime());
             }
 
-            List<String> pids = patients.stream()
-                    .map(Patient::getId)
-                    .collect(Collectors.toList());
+            // 2. 按批次处理患者
+            int batchSize = properties.getBatchSize();
+            List<List<String>> pidBatches = partition(
+                    patients.stream().map(Patient::getId).collect(Collectors.toList()), batchSize);
+            int totalBatches = pidBatches.size();
+            log.info("[FirstAssessmentSync] 分批处理: 患者数={}, 批大小={}, 总批数={}",
+                    patients.size(), batchSize, totalBatches);
 
-            // 2. 批量查询 bedside
-            List<Bedside> bedsides = bedsideRepository.findByPidInAndCodeIn(pids, properties.getBedsideCodes());
-            log.info("[FirstAssessmentSync] bedside 命中: {} 条", bedsides.size());
+            for (int i = 0; i < pidBatches.size(); i++) {
+                List<String> batchPids = pidBatches.get(i);
+                int batchNo = i + 1;
+                log.info("[FirstAssessmentSync] 批次 {}/{} 开始, 患者数={}", batchNo, totalBatches, batchPids.size());
 
-            Map<String, Map<String, Bedside>> firstBedsideMap =
-                    sourceSelector.selectFirstBedsidePerPidAndCode(bedsides, admissionTimes);
+                try {
+                    // 按批次查询 bedside
+                    List<Bedside> bedsides = bedsideRepository.findByPidInAndCodeIn(
+                            batchPids, properties.getBedsideCodes());
+                    Map<String, Map<String, Bedside>> firstBedsideMap =
+                            sourceSelector.selectFirstBedsidePerPidAndCode(bedsides, admissionTimes);
 
-            // 3. 批量查询 score
-            List<Score> scores = scoreRepository.findByPidInAndScoreTypeAndValidTrue(
-                    pids, properties.getScoreType());
-            log.info("[FirstAssessmentSync] score 命中: {} 条", scores.size());
+                    // 按批次查询 score
+                    List<Score> scores = scoreRepository.findByPidInAndScoreTypeAndValidTrue(
+                            batchPids, properties.getScoreType());
+                    Map<String, Score> firstScoreMap =
+                            sourceSelector.selectFirstScorePerPid(scores, admissionTimes);
 
-            Map<String, Score> firstScoreMap =
-                    sourceSelector.selectFirstScorePerPid(scores, admissionTimes);
+                    // 按批次查询 dFormData
+                    List<DFormData> allForms = dFormDataRepository.findByPidInAndStatusAndFormCodeIn(
+                            batchPids, FORM_VALID, getTargetFormCodes());
 
-            // 4. 批量查询 dFormData（两个 formCode）
-            List<DFormData> allForms = dFormDataRepository.findByPidInAndStatusAndFormCodeIn(
-                    pids, FORM_VALID, getTargetFormCodes());
-            log.info("[FirstAssessmentSync] dFormData 命中: {} 条", allForms.size());
+                    // 按 pid 分组
+                    Map<String, List<DFormData>> formsByPid = new HashMap<>();
+                    for (DFormData form : allForms) {
+                        formsByPid.computeIfAbsent(form.getPid(), k -> new ArrayList<>()).add(form);
+                    }
 
-            // 按 pid 分组
-            Map<String, List<DFormData>> formsByPid = new HashMap<>();
-            for (DFormData form : allForms) {
-                formsByPid.computeIfAbsent(form.getPid(), k -> new ArrayList<>()).add(form);
-            }
+                    // 遍历本批患者
+                    Set<String> pidsToProcess = new LinkedHashSet<>(formsByPid.keySet());
+                    pidsToProcess.addAll(firstBedsideMap.keySet());
+                    pidsToProcess.addAll(firstScoreMap.keySet());
 
-            // 5. 遍历每个在院患者（有源数据或有表单的）
-            Set<String> pidsToProcess = new LinkedHashSet<>(formsByPid.keySet());
-            pidsToProcess.addAll(firstBedsideMap.keySet());
-            pidsToProcess.addAll(firstScoreMap.keySet());
+                    for (String pid : pidsToProcess) {
+                        Date admissionTime = admissionTimes.get(pid);
+                        if (admissionTime == null) continue;
 
-            for (String pid : pidsToProcess) {
-                Date admissionTime = admissionTimes.get(pid);
-                if (admissionTime == null) continue;
+                        List<DFormData> patientForms = formsByPid.getOrDefault(pid, Collections.emptyList());
 
-                List<DFormData> patientForms = formsByPid.getOrDefault(pid, Collections.emptyList());
+                        for (String formCode : getTargetFormCodes()) {
+                            totalForms.incrementAndGet();
+                            try {
+                                Map<String, Object> candidateValues = sourceSelector.buildCandidateValues(
+                                        pid, firstBedsideMap, firstScoreMap, formCode);
 
-                // 6. 对两个 formCode 分别处理（lcpdf 可能按 formCode 不同，需分别构建）
-                for (String formCode : getTargetFormCodes()) {
-                    totalForms.incrementAndGet();
-                    try {
-                        // 构建候选值（传入 formCode 以获取正确的 lcpdf 编码）
-                        Map<String, Object> candidateValues = sourceSelector.buildCandidateValues(
-                                pid, firstBedsideMap, firstScoreMap, formCode);
+                                Optional<DFormData> existing = patientForms.stream()
+                                        .filter(f -> formCode.equals(f.getFormCode()))
+                                        .findFirst();
 
-                        Optional<DFormData> existing = patientForms.stream()
-                                .filter(f -> formCode.equals(f.getFormCode()))
-                                .findFirst();
-
-                        if (existing.isPresent()) {
-                            // 已存在 → 比较后更新
-                            SyncStatus status = syncExistingForm(
-                                    existing.get(), candidateValues);
-                            switch (status) {
-                                case UPDATED: updatedForms.incrementAndGet(); break;
-                                case UNCHANGED: unchangedForms.incrementAndGet(); break;
-                                case CONFLICT: conflictForms.incrementAndGet(); break;
-                                default: break;
-                            }
-                        } else {
-                            // 不存在 → 创建
-                            SyncStatus status = createFormIfSourceExists(
-                                    pid, formCode, candidateValues);
-                            switch (status) {
-                                case CREATED: createdForms.incrementAndGet(); break;
-                                case NO_SOURCE: noSourcePatients.incrementAndGet(); break;
-                                default: break;
+                                if (existing.isPresent()) {
+                                    SyncStatus status = syncExistingForm(
+                                            existing.get(), candidateValues);
+                                    switch (status) {
+                                        case UPDATED: updatedForms.incrementAndGet(); break;
+                                        case UNCHANGED: unchangedForms.incrementAndGet(); break;
+                                        case CONFLICT: conflictForms.incrementAndGet(); break;
+                                        default: break;
+                                    }
+                                } else {
+                                    SyncStatus status = createFormIfSourceExists(
+                                            pid, formCode, candidateValues);
+                                    switch (status) {
+                                        case CREATED: createdForms.incrementAndGet(); break;
+                                        case NO_SOURCE: noSourcePatients.incrementAndGet(); break;
+                                        default: break;
+                                    }
+                                }
+                            } catch (Exception e) {
+                                log.error("[FirstAssessmentSync] 异常 pid={}, formCode={}", pid, formCode, e);
+                                failedForms.incrementAndGet();
                             }
                         }
-                    } catch (Exception e) {
-                        log.error("[FirstAssessmentSync] 异常 pid={}, formCode={}", pid, formCode, e);
-                        failedForms.incrementAndGet();
+
+                        // 记录该患者本次同步时间（用于动态频次控制）
+                        lastSyncTimeMap.put(pid, now);
+                    }
+
+                    log.info("[FirstAssessmentSync] 批次 {}/{} 完成, bedside={} score={} form={}",
+                            batchNo, totalBatches, bedsides.size(), scores.size(), allForms.size());
+
+                } catch (Exception e) {
+                    log.error("[FirstAssessmentSync] 批次 {}/{} 异常", batchNo, totalBatches, e);
+                }
+
+                // 批间冷却
+                if (batchNo < totalBatches) {
+                    try {
+                        Thread.sleep(300);
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                        break;
                     }
                 }
             }
@@ -293,6 +362,14 @@ public class FirstAdmissionAssessmentSyncService {
                             + "noSource={} conflicts={} failed={}",
                     createdForms.get(), updatedForms.get(), unchangedForms.get(),
                     noSourcePatients.get(), conflictForms.get(), failedForms.get());
+
+            // 清理过期患者的 lastSyncTimeMap 条目，防止内存泄漏
+            long expireDurationMs = properties.getExpireDurationMs();
+            long nowMs = System.currentTimeMillis();
+            lastSyncTimeMap.entrySet().removeIf(entry -> {
+                long age = nowMs - entry.getValue().getTime();
+                return age >= expireDurationMs * 2; // 保留过期时间 2 倍的记录作为缓冲
+            });
 
             return new SyncResult(totalPatients.get(), totalForms.get(),
                     createdForms.get(), updatedForms.get(), unchangedForms.get(),
@@ -309,6 +386,17 @@ public class FirstAdmissionAssessmentSyncService {
         } finally {
             running.set(false);
         }
+    }
+
+    /**
+     * 将列表按指定大小分组。
+     */
+    private <T> List<List<T>> partition(List<T> list, int size) {
+        List<List<T>> result = new ArrayList<>();
+        for (int i = 0; i < list.size(); i += size) {
+            result.add(list.subList(i, Math.min(i + size, list.size())));
+        }
+        return result;
     }
 
     // ==================== 创建表单 ====================
