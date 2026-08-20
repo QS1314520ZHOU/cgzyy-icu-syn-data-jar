@@ -19,8 +19,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.CollectionUtils;
 import org.springframework.util.StringUtils;
 
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.*;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.stream.Collectors;
@@ -55,9 +56,6 @@ public class FirstAdmissionAssessmentSyncService {
 
     /** 防重入锁 */
     private final AtomicBoolean running = new AtomicBoolean(false);
-
-    /** 每个患者上次同步时间（用于动态频次控制） */
-    private final ConcurrentHashMap<String, Date> lastSyncTimeMap = new ConcurrentHashMap<>();
 
     /** 配置校验标记（只执行一次） */
     private volatile boolean configValidated = false;
@@ -171,6 +169,7 @@ public class FirstAdmissionAssessmentSyncService {
 
     /**
      * 执行全量同步（按患者分批处理，降低数据库压力）。
+     * <p>只处理入科日期为当天的患者，避免查询历史患者的大体量 bedside 数据。</p>
      */
     public SyncResult syncAllAdmittedPatients() {
         if (!running.compareAndSet(false, true)) {
@@ -196,7 +195,7 @@ public class FirstAdmissionAssessmentSyncService {
                 configValidated = true;
             }
 
-            // 1. 批量查询在院患者
+            // 1. 查询在院患者
             List<Patient> allPatients = patientRepository.findByStatus(STATUS_ADMITTED);
             allPatients = allPatients.stream()
                     .filter(p -> p.getIcuAdmissionTime() != null && StringUtils.hasText(p.getId()))
@@ -206,47 +205,27 @@ public class FirstAdmissionAssessmentSyncService {
                 return new SyncResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
             }
 
-            // 2. 动态频次过滤：根据入科时间分层
-            Date now = new Date();
-            long freshDurationMs = properties.getFreshDurationMs();
-            long regularIntervalMs = properties.getRegularIntervalMs();
-            long expireDurationMs = properties.getExpireDurationMs();
+            // 2. 只保留入科日期为当天的患者（避免查询历史患者的大体量 bedside）
+            ZoneId zone = ZoneId.of(properties.getTimezone());
+            LocalDate today = LocalDate.now(zone);
 
             List<Patient> patients = new ArrayList<>();
-            int skippedExpired = 0;
-            int skippedRegularCooldown = 0;
-
+            int skippedNotToday = 0;
             for (Patient p : allPatients) {
-                long admissionAgeMs = now.getTime() - p.getIcuAdmissionTime().getTime();
-
-                // 已过期：入科超过 expireDurationMs，不再同步
-                if (admissionAgeMs >= expireDurationMs) {
-                    skippedExpired++;
-                    continue;
-                }
-
-                // 密集期：入科后 0 ~ freshDurationMs，每次都同步
-                if (admissionAgeMs < freshDurationMs) {
-                    patients.add(p);
-                    continue;
-                }
-
-                // 稳定期：入科后 freshDurationMs ~ expireDurationMs，按 regularIntervalMs 间隔同步
-                Date lastSync = lastSyncTimeMap.get(p.getId());
-                if (lastSync == null || (now.getTime() - lastSync.getTime()) >= regularIntervalMs) {
+                LocalDate admissionDate = p.getIcuAdmissionTime().toInstant().atZone(zone).toLocalDate();
+                if (admissionDate.equals(today)) {
                     patients.add(p);
                 } else {
-                    skippedRegularCooldown++;
+                    skippedNotToday++;
                 }
             }
 
             totalPatients.set(patients.size());
-            log.info("[FirstAssessmentSync] 动态频次过滤: 总在院={}, 密集期={}, 稳定期={}, 过期跳过={}, 冷却跳过={}",
-                    allPatients.size(), patients.size() - skippedRegularCooldown,
-                    skippedRegularCooldown, skippedExpired, skippedRegularCooldown);
+            log.info("[FirstAssessmentSync] 当天入科过滤: 总在院={}, 当天入科={}, 非当天跳过={}",
+                    allPatients.size(), patients.size(), skippedNotToday);
 
             if (patients.isEmpty()) {
-                log.info("[FirstAssessmentSync] 本轮无需同步的患者，跳过");
+                log.info("[FirstAssessmentSync] 今天没有新入科患者，跳过");
                 return new SyncResult(allPatients.size(), 0, 0, 0, 0, 0, 0, 0, 0, 0);
             }
 
@@ -255,7 +234,7 @@ public class FirstAdmissionAssessmentSyncService {
                 admissionTimes.put(p.getId(), p.getIcuAdmissionTime());
             }
 
-            // 2. 按批次处理患者
+            // 3. 按批次处理患者
             int batchSize = properties.getBatchSize();
             List<List<String>> pidBatches = partition(
                     patients.stream().map(Patient::getId).collect(Collectors.toList()), batchSize);
@@ -335,9 +314,6 @@ public class FirstAdmissionAssessmentSyncService {
                                 failedForms.incrementAndGet();
                             }
                         }
-
-                        // 记录该患者本次同步时间（用于动态频次控制）
-                        lastSyncTimeMap.put(pid, now);
                     }
 
                     log.info("[FirstAssessmentSync] 批次 {}/{} 完成, bedside={} score={} form={}",
@@ -363,14 +339,6 @@ public class FirstAdmissionAssessmentSyncService {
                     createdForms.get(), updatedForms.get(), unchangedForms.get(),
                     noSourcePatients.get(), conflictForms.get(), failedForms.get());
 
-            // 清理过期患者的 lastSyncTimeMap 条目，防止内存泄漏
-            long expireDurationMs = properties.getExpireDurationMs();
-            long nowMs = System.currentTimeMillis();
-            lastSyncTimeMap.entrySet().removeIf(entry -> {
-                long age = nowMs - entry.getValue().getTime();
-                return age >= expireDurationMs * 2; // 保留过期时间 2 倍的记录作为缓冲
-            });
-
             return new SyncResult(totalPatients.get(), totalForms.get(),
                     createdForms.get(), updatedForms.get(), unchangedForms.get(),
                     noSourcePatients.get(), conflictForms.get(), failedForms.get(),
@@ -383,6 +351,109 @@ public class FirstAdmissionAssessmentSyncService {
                     createdForms.get(), updatedForms.get(), unchangedForms.get(),
                     noSourcePatients.get(), conflictForms.get(), failedForms.get(),
                     createdFields.get(), updatedFields.get());
+        } finally {
+            running.set(false);
+        }
+    }
+
+    /**
+     * 按指定 patientId 同步入院/入科评估单。
+     * <p>手动触发场景，跳过动态频次控制。</p>
+     */
+    public SyncResult syncByPatientId(String patientId) {
+        if (!running.compareAndSet(false, true)) {
+            log.warn("[FirstAssessmentSync] 上一轮任务尚未完成，跳过本次");
+            return new SyncResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+        }
+
+        AtomicInteger createdForms = new AtomicInteger();
+        AtomicInteger updatedForms = new AtomicInteger();
+        AtomicInteger unchangedForms = new AtomicInteger();
+        AtomicInteger noSourcePatients = new AtomicInteger();
+        AtomicInteger failedForms = new AtomicInteger();
+
+        try {
+            // 0. 配置校验
+            if (!configValidated) {
+                properties.validate();
+                configValidated = true;
+            }
+
+            // 1. 查询指定患者
+            Optional<Patient> patientOpt = patientRepository.findById(patientId);
+            if (patientOpt.isEmpty()) {
+                log.warn("[FirstAssessmentSync] patientId={} 未找到患者", patientId);
+                return new SyncResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            }
+
+            Patient patient = patientOpt.get();
+            if (patient.getIcuAdmissionTime() == null) {
+                log.warn("[FirstAssessmentSync] patientId={} 无入科时间", patientId);
+                return new SyncResult(0, 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            }
+
+            Map<String, Date> admissionTimes = Map.of(patientId, patient.getIcuAdmissionTime());
+
+            // 2. 查询 bedside 和 score 源数据
+            List<Bedside> bedsides = bedsideRepository.findByPidInAndCodeIn(
+                    List.of(patientId), properties.getBedsideCodes());
+            Map<String, Map<String, Bedside>> firstBedsideMap =
+                    sourceSelector.selectFirstBedsidePerPidAndCode(bedsides, admissionTimes);
+
+            List<Score> scores = scoreRepository.findByPidInAndScoreTypeAndValidTrue(
+                    List.of(patientId), properties.getScoreType());
+            Map<String, Score> firstScoreMap =
+                    sourceSelector.selectFirstScorePerPid(scores, admissionTimes);
+
+            // 3. 查询已有表单
+            List<DFormData> patientForms = dFormDataRepository.findByPidInAndStatusAndFormCodeIn(
+                    List.of(patientId), FORM_VALID, getTargetFormCodes());
+
+            // 4. 逐表单同步
+            for (String formCode : getTargetFormCodes()) {
+                try {
+                    Map<String, Object> candidateValues = sourceSelector.buildCandidateValues(
+                            patientId, firstBedsideMap, firstScoreMap, formCode);
+
+                    Optional<DFormData> existing = patientForms.stream()
+                            .filter(f -> formCode.equals(f.getFormCode()))
+                            .findFirst();
+
+                    if (existing.isPresent()) {
+                        SyncStatus status = syncExistingForm(existing.get(), candidateValues);
+                        switch (status) {
+                            case UPDATED: updatedForms.incrementAndGet(); break;
+                            case UNCHANGED: unchangedForms.incrementAndGet(); break;
+                            default: break;
+                        }
+                    } else {
+                        SyncStatus status = createFormIfSourceExists(
+                                patientId, formCode, candidateValues);
+                        switch (status) {
+                            case CREATED: createdForms.incrementAndGet(); break;
+                            case NO_SOURCE: noSourcePatients.incrementAndGet(); break;
+                            default: break;
+                        }
+                    }
+                } catch (Exception e) {
+                    log.error("[FirstAssessmentSync] 异常 pid={}, formCode={}", patientId, formCode, e);
+                    failedForms.incrementAndGet();
+                }
+            }
+
+            int totalForms = createdForms.get() + updatedForms.get()
+                    + unchangedForms.get() + noSourcePatients.get() + failedForms.get();
+            log.info("[FirstAssessmentSync] pid={} 同步完成: created={} updated={} unchanged={} noSource={} failed={}",
+                    patientId, createdForms.get(), updatedForms.get(), unchangedForms.get(),
+                    noSourcePatients.get(), failedForms.get());
+
+            return new SyncResult(1, totalForms,
+                    createdForms.get(), updatedForms.get(), unchangedForms.get(),
+                    noSourcePatients.get(), 0, failedForms.get(), 0, 0);
+
+        } catch (Exception e) {
+            log.error("[FirstAssessmentSync] pid={} 同步异常", patientId, e);
+            return new SyncResult(0, 0, 0, 0, 0, 0, 0, 1, 0, 0);
         } finally {
             running.set(false);
         }
@@ -407,13 +478,16 @@ public class FirstAdmissionAssessmentSyncService {
     private SyncStatus createFormIfSourceExists(String pid, String formCode,
                                                  Map<String, Object> candidateValues) {
         if (candidateValues.isEmpty()) {
+            log.info("[FirstAssessmentSync] pid={} formCode={} 候选值为空，无法创建", pid, formCode);
             return SyncStatus.NO_SOURCE;
         }
+
+        log.info("[FirstAssessmentSync] pid={} formCode={} 创建表单，候选字段: {}", pid, formCode, candidateValues.keySet());
 
         // 构建 fieldDataList
         List<Document> mongoFieldDataList = buildMongoFieldDataList(candidateValues);
         if (mongoFieldDataList.isEmpty()) {
-            log.info("[FirstAssessmentSync] pid={} formCode={} no source values, skip creation",
+            log.info("[FirstAssessmentSync] pid={} formCode={} 构建fieldDataList为空，跳过创建",
                     pid, formCode);
             return SyncStatus.NO_SOURCE;
         }
@@ -527,14 +601,32 @@ public class FirstAdmissionAssessmentSyncService {
         String formCode = form.getFormCode();
 
         if (CollectionUtils.isEmpty(candidateValues)) {
+            log.info("[FirstAssessmentSync] pid={} formCode={} 候选值为空，跳过", pid, formCode);
             return SyncStatus.UNCHANGED;
         }
 
+        // 打印当前表单已有字段
+        Set<String> existingFields = new HashSet<>();
+        if (form.getFieldDataList() != null) {
+            for (DFormFieldData fd : form.getFieldDataList()) {
+                existingFields.add(fd.getField());
+            }
+        }
+        log.info("[FirstAssessmentSync] pid={} formCode={} 表单已有fields={}, 候选fields={}",
+                pid, formCode, existingFields, candidateValues.keySet());
+
         List<FieldChange> changes = new ArrayList<>();
+        List<String> skippedEmpty = new ArrayList<>();
+        List<String> skippedUnchanged = new ArrayList<>();
 
         for (String field : getEffectiveTargetFields()) {
             Object sourceValue = candidateValues.get(field);
             if (isEmptySourceValue(sourceValue)) {
+                if (existingFields.contains(field)) {
+                    // 表单已有该字段但源值为空 → 保留原值不覆盖（符合设计）
+                } else {
+                    skippedEmpty.add(field);
+                }
                 continue;
             }
 
@@ -542,22 +634,31 @@ public class FirstAdmissionAssessmentSyncService {
             Object normalizedNew = comparator.normalizeForWrite(field, oldValue, sourceValue);
 
             if (comparator.valuesEqual(field, oldValue, normalizedNew)) {
-                log.debug("[FirstAssessmentSync] pid={} formCode={} field={} value unchanged, skip",
-                        pid, formCode, field);
+                skippedUnchanged.add(field);
                 continue;
             }
 
+            String type = oldValue == null ? "新增" : "更新";
             changes.add(new FieldChange(field, oldValue, normalizedNew));
+            log.info("[FirstAssessmentSync] pid={} formCode={} field={} {} old={} new={}",
+                    pid, formCode, field, type, oldValue, normalizedNew);
+        }
+
+        if (!skippedEmpty.isEmpty()) {
+            log.info("[FirstAssessmentSync] pid={} formCode={} 源值为空跳过: {}", pid, formCode, skippedEmpty);
+        }
+        if (!skippedUnchanged.isEmpty()) {
+            log.info("[FirstAssessmentSync] pid={} formCode={} 值未变化跳过: {}", pid, formCode, skippedUnchanged);
         }
 
         if (changes.isEmpty()) {
-            log.debug("[FirstAssessmentSync] pid={} formCode={} all values unchanged, skip",
-                    pid, formCode);
+            log.info("[FirstAssessmentSync] pid={} formCode={} 所有值未变化，跳过", pid, formCode);
             return SyncStatus.UNCHANGED;
         }
 
-        log.info("[FirstAssessmentSync] pid={} formCode={} changedFields={}",
-                pid, formCode, changes.stream().map(c -> c.field).collect(Collectors.joining(",")));
+        log.info("[FirstAssessmentSync] pid={} formCode={} 需更新{}个字段: {}",
+                pid, formCode, changes.size(),
+                changes.stream().map(c -> c.field).collect(Collectors.joining(",")));
 
         return applyFieldUpdates(form, changes);
     }
@@ -589,14 +690,17 @@ public class FirstAdmissionAssessmentSyncService {
                     if (reloaded != null) {
                         Object currentValue = findFieldValue(reloaded.getFieldDataList(), change.field);
                         if (comparator.valuesEqual(change.field, currentValue, change.newValue)) {
-                            log.debug("[FirstAssessmentSync] pid={} field={} already updated",
-                                    form.getPid(), change.field);
+                            log.info("[FirstAssessmentSync] pid={} formCode={} field={} 已被并发更新为相同值",
+                                    form.getPid(), form.getFormCode(), change.field);
                             continue;
                         }
                     }
-                    log.warn("[FirstAssessmentSync] pid={} formCode={} field={} concurrent modification",
+                    log.warn("[FirstAssessmentSync] pid={} formCode={} field={} 并发修改冲突",
                             form.getPid(), form.getFormCode(), change.field);
                     anyConflict = true;
+                } else {
+                    log.info("[FirstAssessmentSync] pid={} formCode={} field={} 更新成功 old={} new={}",
+                            form.getPid(), form.getFormCode(), change.field, change.oldValue, change.newValue);
                 }
             } else {
                 // 追加新字段
@@ -612,8 +716,11 @@ public class FirstAdmissionAssessmentSyncService {
 
                 UpdateResult result = smartCareMongoTemplate.updateFirst(query, update, DFormData.class);
                 if (result.getModifiedCount() == 0) {
-                    log.debug("[FirstAssessmentSync] pid={} field={} may already exist, skip",
-                            form.getPid(), change.field);
+                    log.warn("[FirstAssessmentSync] pid={} formCode={} field={} 追加失败(可能已存在)",
+                            form.getPid(), form.getFormCode(), change.field);
+                } else {
+                    log.info("[FirstAssessmentSync] pid={} formCode={} field={} 追加成功 new={}",
+                            form.getPid(), form.getFormCode(), change.field, change.newValue);
                 }
             }
         }

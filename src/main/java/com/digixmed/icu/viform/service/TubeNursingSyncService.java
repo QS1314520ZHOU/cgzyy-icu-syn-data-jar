@@ -463,23 +463,51 @@ public class TubeNursingSyncService {
                 NurseRecordsHistory existing = historyMap.get(historyKey);
 
                 if (existing == null) {
-                    NurseRecords created = createMergedNurseRecord(pid, patientName, unit, desc);
-                    NurseRecords saved = nurseRecordsRepository.insert(created);
+                    // 检查同一时间点是否已有牙齿的自动同步记录
+                    NurseRecords existingTooth = findExistingAutoSynRecord(pid, unit.minuteTime);
 
-                    NurseRecordsHistory history = new NurseRecordsHistory();
-                    history.setPid(pid);
-                    history.setSyncType(SYNC_TYPE_PIPE);
-                    history.setTubeExeId(tubeExeIdJoined);
-                    history.setShiftType(unit.shiftType);
-                    history.setTubeRecordTime(unit.minuteTime);
-                    history.setNurseRecordId(saved.getId());
-                    history.setSyncContent(desc);
-                    history.setSyncTime(new Date());
-                    nurseRecordsHistoryRepository.insert(history);
+                    if (existingTooth != null) {
+                        // 已有牙齿记录 → 管道数据拼接到已有记录前面
+                        String mergedDesc = desc + "\n" + existingTooth.getDesc();
+                        existingTooth.setDesc(mergedDesc);
+                        existingTooth.setUsername(unit.recordUserName);
+                        existingTooth.setUserId(unit.recordUserId);
+                        nurseRecordsRepository.save(existingTooth);
 
-                    synced.incrementAndGet();
-                    log.info("[TubeNursingSync] 新增合并护理记录 pid={}, time={}, 管道数={}",
-                            pid, unit.minuteTime, unit.parts.size());
+                        // 创建管道 history
+                        NurseRecordsHistory pipeHistory = new NurseRecordsHistory();
+                        pipeHistory.setPid(pid);
+                        pipeHistory.setSyncType(SYNC_TYPE_PIPE);
+                        pipeHistory.setTubeExeId(tubeExeIdJoined);
+                        pipeHistory.setShiftType(unit.shiftType);
+                        pipeHistory.setTubeRecordTime(unit.minuteTime);
+                        pipeHistory.setNurseRecordId(existingTooth.getId());
+                        pipeHistory.setSyncContent(desc);
+                        pipeHistory.setSyncTime(new Date());
+                        nurseRecordsHistoryRepository.insert(pipeHistory);
+
+                        synced.incrementAndGet();
+                        log.info("[TubeNursingSync] 管道数据拼接到已有牙齿记录 pid={}, nurseRecordId={}", pid, existingTooth.getId());
+                    } else {
+                        // 无已有记录 → 新建
+                        NurseRecords created = createMergedNurseRecord(pid, patientName, unit, desc);
+                        NurseRecords saved = nurseRecordsRepository.insert(created);
+
+                        NurseRecordsHistory history = new NurseRecordsHistory();
+                        history.setPid(pid);
+                        history.setSyncType(SYNC_TYPE_PIPE);
+                        history.setTubeExeId(tubeExeIdJoined);
+                        history.setShiftType(unit.shiftType);
+                        history.setTubeRecordTime(unit.minuteTime);
+                        history.setNurseRecordId(saved.getId());
+                        history.setSyncContent(desc);
+                        history.setSyncTime(new Date());
+                        nurseRecordsHistoryRepository.insert(history);
+
+                        synced.incrementAndGet();
+                        log.info("[TubeNursingSync] 新增合并护理记录 pid={}, time={}, 管道数={}",
+                                pid, unit.minuteTime, unit.parts.size());
+                    }
                     continue;
                 }
 
@@ -594,6 +622,16 @@ public class TubeNursingSyncService {
         }
 
         return tubeName + "：" + fields;
+    }
+
+    /**
+     * 查找指定患者在同一分钟已有的自动同步护理记录（管道或牙齿）。
+     */
+    private NurseRecords findExistingAutoSynRecord(String pid, Date minuteTime) {
+        Date start = minuteTime;
+        Date end = new Date(minuteTime.getTime() + 60_000);
+        List<NurseRecords> records = nurseRecordsRepository.findByPidAndAutoSynTrueAndTimeBetween(pid, start, end);
+        return records.isEmpty() ? null : records.get(0);
     }
 
 }

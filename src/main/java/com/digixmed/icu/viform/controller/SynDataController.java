@@ -196,6 +196,20 @@ public class SynDataController {
         return Map.of("success", true, "data", result.toMap(), "elapsedMs", elapsed);
     }
 
+    /**
+     * 按 patientId 手动触发入院/入科评估单同步。
+     */
+    @PostMapping("/first-admission-assessment/{patientId}")
+    public Map<String, Object> firstAdmissionAssessmentByPatientId(@PathVariable String patientId) {
+        log.info("[API] POST /syn/first-admission-assessment/{} - 手动同步指定患者", patientId);
+        long start = System.currentTimeMillis();
+        FirstAdmissionAssessmentSyncService.SyncResult result =
+                firstAdmissionAssessmentSyncService.syncByPatientId(patientId);
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/first-admission-assessment/{} 完成: 耗时={}ms", patientId, elapsed);
+        return Map.of("success", true, "patientId", patientId, "data", result.toMap(), "elapsedMs", elapsed);
+    }
+
     /** 调试：查询某在院患者的 bedside 记录。 */
     @GetMapping("/patients/{patientId}/bedsides")
     public List<Bedside> bedsides(@PathVariable String patientId) {

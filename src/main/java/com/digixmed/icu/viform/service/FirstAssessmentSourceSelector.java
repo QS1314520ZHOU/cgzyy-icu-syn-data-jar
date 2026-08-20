@@ -202,7 +202,8 @@ public class FirstAssessmentSourceSelector {
 
         // 1a. bedside 映射：SCORE_FIELD_MAPPING（只取数值分数，不含括号结论）
         Map<String, Bedside> pidBedside = bedsideMap.getOrDefault(pid, Collections.emptyMap());
-        log.info("[FirstAssessmentSync] pid={} bedside codes: {}", pid, pidBedside.keySet());
+        log.info("[FirstAssessmentSync] pid={} bedside命中codes={}, 期望codes={}",
+                pid, pidBedside.keySet(), properties.getBedsideCodes());
         for (Map.Entry<String, String> entry : SCORE_FIELD_MAPPING.entrySet()) {
             Bedside source = pidBedside.get(entry.getKey());
             if (source == null) continue;

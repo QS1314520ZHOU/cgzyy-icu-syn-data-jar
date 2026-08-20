@@ -24,6 +24,10 @@ public interface BedsideRepository extends MongoRepository<Bedside, String> {
     /** 批量按患者 ID + 编码集合查询。 */
     List<Bedside> findByPidInAndCodeIn(Collection<String> pids, Collection<String> codes);
 
+    /** 批量按患者 ID + 编码集合 + 时间范围查询。 */
+    List<Bedside> findByPidInAndCodeInAndTimeAfterAndValidTrue(
+            Collection<String> pids, Collection<String> codes, Date time);
+
     /** 批量按患者 ID + 编码 + 时间范围查询。 */
     List<Bedside> findByPidInAndCodeAndTimeAfter(Collection<String> pids, String code, Date time);
 
