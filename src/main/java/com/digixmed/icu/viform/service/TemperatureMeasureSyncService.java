@@ -6,6 +6,8 @@ import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.entity.NurseRecords;
 import com.digixmed.icu.viform.entity.NurseRecordsHistory;
 import com.digixmed.icu.viform.entity.Patient;
+import com.digixmed.icu.viform.entity.Account;
+import com.digixmed.icu.viform.repository.smartcare.AccountRepository;
 import com.digixmed.icu.viform.repository.smartcare.BedsideRepository;
 import com.digixmed.icu.viform.repository.smartcare.NurseRecordsHistoryRepository;
 import com.digixmed.icu.viform.repository.smartcare.NurseRecordsRepository;
@@ -46,6 +48,7 @@ public class TemperatureMeasureSyncService {
     private final BedsideRepository bedsideRepository;
     private final NurseRecordsRepository nurseRecordsRepository;
     private final NurseRecordsHistoryRepository nurseRecordsHistoryRepository;
+    private final AccountRepository accountRepository;
     private final TubeNursingSyncProperties properties;
     private final MongoTemplate smartCareMongoTemplate;
 
@@ -62,6 +65,25 @@ public class TemperatureMeasureSyncService {
 
     /** 同步类型标识 */
     private static final String SYNC_TYPE = "TEMP_MEASURE";
+
+    /** 降温措施选项映射：strVal → 显示文本 */
+    private static final Map<String, String> COOLING_OPTIONS = new LinkedHashMap<>();
+    /** 复温措施选项映射：strVal → 显示文本 */
+    private static final Map<String, String> WARMING_OPTIONS = new LinkedHashMap<>();
+
+    static {
+        COOLING_OPTIONS.put("①", "①头部冰帽、背部冰毯");
+        COOLING_OPTIONS.put("②", "②前额、颈部、腋窝及腹股沟区放置冰袋");
+        COOLING_OPTIONS.put("③", "③降低室温");
+        COOLING_OPTIONS.put("④", "④血管内降温");
+        COOLING_OPTIONS.put("⑤", "⑤冬眠合剂");
+
+        WARMING_OPTIONS.put("①", "①复温毯、复温帽");
+        WARMING_OPTIONS.put("②", "②棉被/毛毯保暖");
+        WARMING_OPTIONS.put("③", "③提升室温");
+        WARMING_OPTIONS.put("④", "④血管内复温");
+        WARMING_OPTIONS.put("⑤", "⑤停用冬眠合剂");
+    }
 
     /** 同步结果统计 */
     public static class SyncResult {
@@ -144,6 +166,21 @@ public class TemperatureMeasureSyncService {
                         continue;
                     }
 
+                    // 批量查询账户信息
+                    Set<String> editUserIds = tempRecords.stream()
+                            .map(Bedside::getEditUser)
+                            .filter(StringUtils::hasText)
+                            .collect(Collectors.toSet());
+                    Map<String, Account> accountMap = new HashMap<>();
+                    if (!editUserIds.isEmpty()) {
+                        List<Account> accounts = accountRepository.findByIdIn(editUserIds);
+                        for (Account account : accounts) {
+                            accountMap.put(account.getId(), account);
+                        }
+                        log.info("[TempMeasureSync] 批次 {}/{} account 命中: {}/{}",
+                                batchNo, totalBatches, accountMap.size(), editUserIds.size());
+                    }
+
                     // 按 pid 分组
                     Map<String, List<Bedside>> recordsByPid = tempRecords.stream()
                             .collect(Collectors.groupingBy(Bedside::getPid));
@@ -164,7 +201,7 @@ public class TemperatureMeasureSyncService {
 
                         try {
                             processPatientRecords(pid, patientName, entry.getValue(),
-                                    historyMap, syncedRecords, skippedRecords,
+                                    historyMap, accountMap, syncedRecords, skippedRecords,
                                     updatedRecords, failedRecords);
                         } catch (Exception e) {
                             log.error("[TempMeasureSync] 处理患者异常 pid={}", pid, e);
@@ -211,6 +248,7 @@ public class TemperatureMeasureSyncService {
     private void processPatientRecords(String pid, String patientName,
                                         List<Bedside> records,
                                         Map<String, NurseRecordsHistory> historyMap,
+                                        Map<String, Account> accountMap,
                                         AtomicInteger synced,
                                         AtomicInteger skipped,
                                         AtomicInteger updated,
@@ -243,71 +281,63 @@ public class TemperatureMeasureSyncService {
                 // 取第一条记录的时间和操作人信息
                 Bedside firstRecord = minuteRecords.get(0);
                 Date minuteTime = firstRecord.getTime();
+                String editUserId = firstRecord.getEditUser();
+                Account editAccount = StringUtils.hasText(editUserId) ? accountMap.get(editUserId) : null;
+                String trueName = editAccount != null ? editAccount.getTrueName() : "";
+                String accountUsername = editAccount != null ? editAccount.getUsername() : "";
+                String accountProfession = editAccount != null ? editAccount.getProfession() : "";
                 String historyKey = pid + "_" + SYNC_TYPE + "_" + minuteKey;
 
                 NurseRecordsHistory existingHistory = historyMap.get(historyKey);
 
+                // 核心逻辑：日志表有记录 = 已同步过 = 直接跳过
                 if (existingHistory != null) {
-                    // 已有历史 → 检查是否需要更新
-                    boolean contentSame = desc.equals(existingHistory.getSyncContent());
-                    NurseRecords nurseRecord = existingHistory.getNurseRecordId() == null
-                            ? null
-                            : nurseRecordsRepository.findById(existingHistory.getNurseRecordId())
-                                    .orElse(null);
+                    skipped.incrementAndGet();
+                    log.info("[TempMeasureSync] 已同步过，跳过 pid={}, time={}", pid, minuteTime);
+                    continue;
+                }
 
-                    if (nurseRecord == null) {
-                        // 记录丢失，重建
-                        NurseRecords newRecord = createNurseRecord(pid, patientName, desc, minuteTime);
-                        NurseRecords saved = nurseRecordsRepository.insert(newRecord);
-                        existingHistory.setNurseRecordId(saved.getId());
-                        existingHistory.setSyncContent(desc);
-                        existingHistory.setSyncTime(new Date());
-                        nurseRecordsHistoryRepository.save(existingHistory);
-                        synced.incrementAndGet();
-                        continue;
-                    }
-
-                    if (contentSame) {
-                        skipped.incrementAndGet();
-                        continue;
-                    }
-
-                    // 内容变化 → 更新
-                    nurseRecord.setDesc(desc);
-                    nurseRecordsRepository.save(nurseRecord);
-                    existingHistory.setSyncContent(desc);
-                    existingHistory.setSyncTime(new Date());
-                    nurseRecordsHistoryRepository.save(existingHistory);
-                    updated.incrementAndGet();
-                    log.info("[TempMeasureSync] 更新护理记录 pid={}, time={}", pid, minuteTime);
-                } else {
-                    // 无历史 → 检查同时间点是否已有管道/牙齿记录需要拼接
+                {
+                    // 无历史 → 检查同时间点是否已有记录（可能是用户手写的，也可能是其他同步的）
                     NurseRecords existingAtTime = findExistingAutoSynRecord(pid, minuteTime);
 
                     if (existingAtTime != null) {
-                        // 已有记录 → 拼接
-                        String oldDesc = existingAtTime.getDesc();
-                        String mergedDesc = StringUtils.hasText(oldDesc)
-                                ? oldDesc + "\n" + desc
-                                : desc;
-                        existingAtTime.setDesc(mergedDesc);
-                        nurseRecordsRepository.save(existingAtTime);
+                        // 检查是否是用户手写的
+                        if (isUserWritten(existingAtTime)) {
+                            // [修改记录] 2026-08-22 易绍龙: 用户手写记录 → 始终追加，不跳过
+                            appendToExistingRecord(existingAtTime, desc, minuteTime, pid, editUserId, trueName);
+                            synced.incrementAndGet();
+                            log.info("[TempMeasureSync] 追加体温数据到用户记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
+                        } else {
+                            // 其他同步记录 → 体温数据拼接到已有记录后面
+                            String oldDesc = existingAtTime.getDesc();
+                            String mergedDesc = StringUtils.hasText(oldDesc)
+                                    ? oldDesc + "\n" + desc
+                                    : desc;
+                            existingAtTime.setDesc(mergedDesc);
+                            existingAtTime.setUsername(trueName);
+                            existingAtTime.setUserId(editUserId);
+                            nurseRecordsRepository.save(existingAtTime);
 
-                        NurseRecordsHistory newHistory = new NurseRecordsHistory();
-                        newHistory.setPid(pid);
-                        newHistory.setSyncType(SYNC_TYPE);
-                        newHistory.setTubeRecordTime(minuteTime);
-                        newHistory.setNurseRecordId(existingAtTime.getId());
-                        newHistory.setSyncContent(desc);
-                        newHistory.setSyncTime(new Date());
-                        nurseRecordsHistoryRepository.insert(newHistory);
-                        historyMap.put(historyKey, newHistory);
+                            // 创建体温 history 记录
+                            NurseRecordsHistory newHistory = new NurseRecordsHistory();
+                            newHistory.setPid(pid);
+                            newHistory.setSyncType(SYNC_TYPE);
+                            newHistory.setTubeRecordTime(minuteTime);
+                            newHistory.setNurseRecordId(existingAtTime.getId());
+                            newHistory.setSyncContent(desc);
+                            newHistory.setSyncTime(new Date());
+                            nurseRecordsHistoryRepository.insert(newHistory);
+                            historyMap.put(historyKey, newHistory);
 
-                        synced.incrementAndGet();
-                        log.info("[TempMeasureSync] 拼接到已有护理记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
+                            synced.incrementAndGet();
+                            log.info("[TempMeasureSync] 体温数据拼接到同步记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
+                        }
                     } else {
-                        // 无已有记录 → 新建
-                        NurseRecords newRecord = createNurseRecord(pid, patientName, desc, minuteTime);
+                        // 无已有记录 → 新建（标记为自动同步）
+                        NurseRecords newRecord = createNurseRecord(pid, patientName, desc, minuteTime, editUserId, trueName,
+                                accountUsername, accountProfession);
+                        newRecord.setAutoSyn(true);  // 标记为自动同步
                         NurseRecords saved = nurseRecordsRepository.insert(newRecord);
 
                         NurseRecordsHistory newHistory = new NurseRecordsHistory();
@@ -321,7 +351,7 @@ public class TemperatureMeasureSyncService {
                         historyMap.put(historyKey, newHistory);
 
                         synced.incrementAndGet();
-                        log.info("[TempMeasureSync] 新增护理记录 pid={}, time={}", pid, minuteTime);
+                        log.info("[TempMeasureSync] 新增同步护理记录 pid={}, time={}", pid, minuteTime);
                     }
                 }
             } catch (Exception e) {
@@ -343,24 +373,113 @@ public class TemperatureMeasureSyncService {
 
             if (CODE_COOLING.equals(r.getCode())) {
                 if (sb.length() > 0) sb.append("\n");
-                sb.append("降温措施：").append(val);
+                sb.append("降温措施：").append(resolveOption(COOLING_OPTIONS, val));
             } else if (CODE_WARMING.equals(r.getCode())) {
                 if (sb.length() > 0) sb.append("\n");
-                sb.append("复温措施：").append(val);
+                sb.append("复温措施：").append(resolveOption(WARMING_OPTIONS, val));
             }
         }
         return sb.length() > 0 ? sb.toString() : null;
     }
 
     /**
-     * 查找指定患者在同一分钟已有的自动同步护理记录。
+     * 根据选项映射解析 strVal，支持多选用、分隔。
+     * 如 "①、②" → "①头部冰帽、背部冰毯、②前额、颈部、腋窝及腹股沟区放置冰袋"
+     */
+    private String resolveOption(Map<String, String> optionMap, String strVal) {
+        if (!strVal.contains("、")) {
+            // 单选
+            String mapped = optionMap.get(strVal);
+            return mapped != null ? mapped : strVal;
+        }
+        // 多选：按、分隔，逐个映射
+        String[] parts = strVal.split("、");
+        StringBuilder result = new StringBuilder();
+        for (String part : parts) {
+            String trimmed = part.trim();
+            if (!StringUtils.hasText(trimmed)) continue;
+            if (result.length() > 0) result.append("、");
+            String mapped = optionMap.get(trimmed);
+            result.append(mapped != null ? mapped : trimmed);
+        }
+        return result.toString();
+    }
+
+    /**
+     * 查找指定患者在同一时间点已有的护理记录。
+     * 精确匹配年月日时分，不使用时间范围。
      */
     private NurseRecords findExistingAutoSynRecord(String pid, Date minuteTime) {
-        Date start = minuteTime;
-        Date end = new Date(minuteTime.getTime() + 60_000);
-        List<NurseRecords> records = nurseRecordsRepository
-                .findByPidAndAutoSynTrueAndTimeBetween(pid, start, end);
+        // 截断到分钟开始
+        Date start = TimeUtils.truncateToMinute(minuteTime);
+        // 截断到分钟结束（下一分钟）
+        Date end = new Date(start.getTime() + 60_000);
+        List<NurseRecords> records = nurseRecordsRepository.findByPidAndTimeBetween(pid, start, end);
         return records.isEmpty() ? null : records.get(0);
+    }
+
+    /**
+     * 判断是否是用户手写的记录。
+     *
+     * @param record 护理记录
+     * @return true=用户手写，false=自动同步
+     */
+    private boolean isUserWritten(NurseRecords record) {
+        // 用户手写的判断条件：
+        // 1. autoSyn = null 或 false（非自动同步）
+        // 2. 或者 username 不是系统账号
+        return !Boolean.TRUE.equals(record.getAutoSyn())
+               || !isSystemAccount(record.getUsername());
+    }
+
+    /**
+     * 判断是否是系统账号。
+     *
+     * @param username 用户名
+     * @return true=系统账号，false=用户账号
+     */
+    private boolean isSystemAccount(String username) {
+        // 系统账号判断（根据实际配置的系统账号）
+        return "系统同步".equals(username)
+               || "icu-sync".equals(username)
+               || "system".equals(username)
+               || username == null;
+    }
+
+    /**
+     * 追加数据到已有记录（不覆盖用户操作人信息）。
+     * 保存前重新查询数据库获取最新 desc，避免用户正在编辑时的竞态问题。
+     */
+    private void appendToExistingRecord(NurseRecords existingRecord, String desc,
+                                        Date minuteTime, String pid,
+                                        String editUserId, String trueName) {
+        // [修改记录] 2026-08-22 易绍龙: 保存前重新查询，获取用户最新编辑内容
+        NurseRecords latest = nurseRecordsRepository.findById(existingRecord.getId()).orElse(existingRecord);
+        String oldDesc = latest.getDesc();
+
+        // 防止重复追加
+        if (StringUtils.hasText(oldDesc) && oldDesc.contains(desc)) {
+            log.info("[TempMeasureSync] 同步内容已存在于记录中，跳过追加 pid={}, nurseRecordId={}",
+                    pid, existingRecord.getId());
+            return;
+        }
+
+        String mergedDesc = StringUtils.hasText(oldDesc)
+                ? oldDesc + "\n" + desc
+                : desc;
+        latest.setDesc(mergedDesc);
+        // [修改记录] 2026-08-22 易绍龙: 追加时不覆盖用户的 username/userId
+        nurseRecordsRepository.save(latest);
+
+        // 创建体温 history 记录
+        NurseRecordsHistory newHistory = new NurseRecordsHistory();
+        newHistory.setPid(pid);
+        newHistory.setSyncType(SYNC_TYPE);
+        newHistory.setTubeRecordTime(minuteTime);
+        newHistory.setNurseRecordId(existingRecord.getId());
+        newHistory.setSyncContent(desc);
+        newHistory.setSyncTime(new Date());
+        nurseRecordsHistoryRepository.insert(newHistory);
     }
 
     /**
@@ -375,17 +494,23 @@ public class TemperatureMeasureSyncService {
      * 创建护理记录对象。
      */
     private NurseRecords createNurseRecord(String pid, String patientName,
-                                            String desc, Date time) {
+                                            String desc, Date time,
+                                            String editUserId, String trueName,
+                                            String accountUsername, String accountProfession) {
         NurseRecords nurseRecord = new NurseRecords();
         nurseRecord.setPid(pid);
         nurseRecord.setName(patientName);
         nurseRecord.setDesc(desc);
         nurseRecord.setTime(TimeUtils.truncateToMinute(time));
         nurseRecord.setCreateTime(new Date());
+        nurseRecord.setUsername(trueName);
+        nurseRecord.setUserId(editUserId);
+        nurseRecord.setTrueName(accountUsername);
+        nurseRecord.setProfessions(accountProfession);
         nurseRecord.setValid(true);
-        nurseRecord.setAutoSyn(true);
         nurseRecord.setUseTimes(0);
         nurseRecord.setDrugExeManualFlag(false);
+        nurseRecord.setAutoSyn(false);
         return nurseRecord;
     }
 

@@ -151,13 +151,11 @@ public class ToothSyncService {
                             .map(Bedside::getEditUser)
                             .filter(StringUtils::hasText)
                             .collect(Collectors.toSet());
-                    Map<String, String> accountNameMap = new HashMap<>();
+                    Map<String, Account> accountMap = new HashMap<>();
                     if (!editUserIds.isEmpty()) {
                         List<Account> accounts = accountRepository.findByIdIn(editUserIds);
                         for (Account account : accounts) {
-                            if (StringUtils.hasText(account.getTrueName())) {
-                                accountNameMap.put(account.getId(), account.getTrueName());
-                            }
+                            accountMap.put(account.getId(), account);
                         }
                     }
 
@@ -185,95 +183,73 @@ public class ToothSyncService {
 
                             Date recordTime = record.getTime();
                             String editUserId = record.getEditUser();
-                            String editUserName = accountNameMap.getOrDefault(editUserId, "");
+                            Account editAccount = accountMap.get(editUserId);
+                            String editUserName = editAccount != null ? editAccount.getTrueName() : "";
+                            String accountUsername = editAccount != null ? editAccount.getUsername() : "";
+                            String accountProfession = editAccount != null ? editAccount.getProfession() : "";
 
                             String historyKey = buildHistoryKey(pid, recordTime);
                             NurseRecordsHistory existingHistory = historyMap.get(historyKey);
 
+                            // 核心逻辑：日志表有记录 = 已同步过 = 直接跳过
                             if (existingHistory != null) {
-                                Date minuteTime = TimeUtils.truncateToMinute(recordTime);
-                                boolean contentSame = strVal.equals(existingHistory.getSyncContent());
+                                skippedRecords.incrementAndGet();
+                                log.info("[ToothSync] 已同步过，跳过 pid={}, time={}", pid, recordTime);
+                                continue;
+                            }
 
-                                NurseRecords nurseRecord = existingHistory.getNurseRecordId() == null
-                                        ? null
-                                        : nurseRecordsRepository.findById(existingHistory.getNurseRecordId())
-                                                .orElse(null);
-
-                                if (nurseRecord == null) {
-                                    NurseRecords newRecord = createNurseRecord(pid, patientName,
-                                            editUserName, editUserId, record, strVal);
-                                    NurseRecords saved = nurseRecordsRepository.insert(newRecord);
-
-                                    existingHistory.setNurseRecordId(saved.getId());
-                                    existingHistory.setSyncContent(strVal);
-                                    existingHistory.setSyncTime(new Date());
-                                    nurseRecordsHistoryRepository.save(existingHistory);
-
-                                    syncedRecords.incrementAndGet();
-                                    continue;
-                                }
-
-                                boolean timeSame = Objects.equals(nurseRecord.getTime(), minuteTime);
-
-                                if (contentSame && timeSame) {
-                                    skippedRecords.incrementAndGet();
-                                    continue;
-                                }
-
-                                nurseRecord.setDesc(strVal);
-                                nurseRecord.setTime(minuteTime);
-                                nurseRecord.setUsername(editUserName);
-                                nurseRecordsRepository.save(nurseRecord);
-
-                                existingHistory.setSyncContent(strVal);
-                                existingHistory.setSyncTime(new Date());
-                                nurseRecordsHistoryRepository.save(existingHistory);
-
-                                updatedRecords.incrementAndGet();
-                                log.info("[ToothSync] 更新牙齿护理记录 pid={}, 内容变更={}, 时间变更={}",
-                                        pid, !contentSame, !timeSame);
-                            } else {
-                                // 检查同一时间点是否已有管道/牙齿的自动同步记录
+                            {
+                                // 检查同一时间点是否已有记录（可能是用户手写的，也可能是其他同步的）
                                 Date minuteTime = TimeUtils.truncateToMinute(recordTime);
                                 NurseRecords existingAtTime = findExistingAutoSynRecord(pid, minuteTime);
 
                                 if (existingAtTime != null) {
-                                    // 同一时间点已有记录（管道）→ 拼接到已有记录后面
-                                    String oldDesc = existingAtTime.getDesc();
-                                    String mergedDesc = StringUtils.hasText(oldDesc)
-                                            ? oldDesc + "\n" + strVal
-                                            : strVal;
-                                    existingAtTime.setDesc(mergedDesc);
-                                    nurseRecordsRepository.save(existingAtTime);
+                                    // 检查是否是用户手写的
+                                    if (isUserWritten(existingAtTime)) {
+                                        // [修改记录] 2026-08-22 易绍龙: 用户手写记录 → 始终追加，不跳过
+                                        appendToExistingRecord(existingAtTime, strVal, record, pid);
+                                        syncedRecords.incrementAndGet();
+                                        log.info("[ToothSync] 追加牙齿数据到用户记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
+                                    } else {
+                                        // 其他同步记录 → 牙齿数据拼接到已有记录后面
+                                        String oldDesc = existingAtTime.getDesc();
+                                        String mergedDesc = StringUtils.hasText(oldDesc)
+                                                ? oldDesc + "\n" + strVal
+                                                : strVal;
+                                        existingAtTime.setDesc(mergedDesc);
+                                        nurseRecordsRepository.save(existingAtTime);
 
-                                    // 更新或创建牙齿 history
-                                    NurseRecordsHistory existingPipeHistory = findHistoryByNurseRecordId(
-                                            existingAtTime.getId());
-                                    if (existingPipeHistory != null) {
-                                        existingPipeHistory.setSyncContent(mergedDesc);
-                                        existingPipeHistory.setSyncTime(new Date());
-                                        nurseRecordsHistoryRepository.save(existingPipeHistory);
+                                        // 更新或创建牙齿 history
+                                        NurseRecordsHistory existingPipeHistory = findHistoryByNurseRecordId(
+                                                existingAtTime.getId());
+                                        if (existingPipeHistory != null) {
+                                            existingPipeHistory.setSyncContent(mergedDesc);
+                                            existingPipeHistory.setSyncTime(new Date());
+                                            nurseRecordsHistoryRepository.save(existingPipeHistory);
+                                        }
+
+                                        // 创建牙齿 history 记录
+                                        NurseRecordsHistory newHistory = new NurseRecordsHistory();
+                                        newHistory.setPid(pid);
+                                        newHistory.setSyncType(SYNC_TYPE);
+                                        newHistory.setTubeExeId(record.getId());
+                                        newHistory.setTubeType(SYNC_TYPE);
+                                        newHistory.setShiftType("");
+                                        newHistory.setTubeRecordTime(recordTime);
+                                        newHistory.setNurseRecordId(existingAtTime.getId());
+                                        newHistory.setSyncTime(new Date());
+                                        newHistory.setSyncContent(strVal);
+                                        nurseRecordsHistoryRepository.insert(newHistory);
+
+                                        syncedRecords.incrementAndGet();
+                                        log.info("[ToothSync] 牙齿数据拼接到同步记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
                                     }
-
-                                    // 创建牙齿 history 记录
-                                    NurseRecordsHistory newHistory = new NurseRecordsHistory();
-                                    newHistory.setPid(pid);
-                                    newHistory.setSyncType(SYNC_TYPE);
-                                    newHistory.setTubeExeId(record.getId());
-                                    newHistory.setTubeType(SYNC_TYPE);
-                                    newHistory.setShiftType("");
-                                    newHistory.setTubeRecordTime(recordTime);
-                                    newHistory.setNurseRecordId(existingAtTime.getId());
-                                    newHistory.setSyncTime(new Date());
-                                    newHistory.setSyncContent(strVal);
-                                    nurseRecordsHistoryRepository.insert(newHistory);
-
-                                    syncedRecords.incrementAndGet();
-                                    log.info("[ToothSync] 拼接到已有护理记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
                                 } else {
-                                    // 无已有记录 → 新建
+                                    // 无已有记录 → 新建（标记为自动同步）
                                     NurseRecords newRecord = createNurseRecord(pid, patientName,
-                                            editUserName, editUserId, record, strVal);
+                                            editUserName, editUserId, record, strVal,
+                                            accountUsername, accountProfession);
+                                    newRecord.setAutoSyn(true);  // 标记为自动同步
                                     NurseRecords saved = nurseRecordsRepository.insert(newRecord);
 
                                     NurseRecordsHistory newHistory = new NurseRecordsHistory();
@@ -289,7 +265,7 @@ public class ToothSyncService {
                                     nurseRecordsHistoryRepository.insert(newHistory);
 
                                     syncedRecords.incrementAndGet();
-                                    log.info("[ToothSync] 新增牙齿护理记录 pid={}", pid);
+                                    log.info("[ToothSync] 新增同步护理记录 pid={}", pid);
                                 }
                             }
                         } catch (Exception e) {
@@ -354,29 +330,35 @@ public class ToothSyncService {
      */
     private NurseRecords createNurseRecord(String pid, String patientName,
                                             String editUserName, String editUserId,
-                                            Bedside record, String desc) {
+                                            Bedside record, String desc,
+                                            String accountUsername, String accountProfession) {
         NurseRecords nurseRecord = new NurseRecords();
         nurseRecord.setPid(pid);
         nurseRecord.setName(patientName);
         nurseRecord.setUsername(editUserName);
         nurseRecord.setUserId(editUserId);
+        nurseRecord.setTrueName(accountUsername);
+        nurseRecord.setProfessions(accountProfession);
         nurseRecord.setDesc(desc);
         nurseRecord.setTime(TimeUtils.truncateToMinute(record.getTime()));
         nurseRecord.setCreateTime(new Date());
         nurseRecord.setValid(true);
-        nurseRecord.setAutoSyn(true);
         nurseRecord.setUseTimes(0);
         nurseRecord.setDrugExeManualFlag(false);
+        nurseRecord.setAutoSyn(false);
         return nurseRecord;
     }
 
     /**
-     * 查找指定患者在同一分钟已有的自动同步护理记录（管道或牙齿）。
+     * 查找指定患者在同一时间点已有的护理记录（管道或牙齿）。
+     * 精确匹配年月日时分，不使用时间范围。
      */
     private NurseRecords findExistingAutoSynRecord(String pid, Date minuteTime) {
-        Date start = minuteTime;
-        Date end = new Date(minuteTime.getTime() + 60_000);
-        List<NurseRecords> records = nurseRecordsRepository.findByPidAndAutoSynTrueAndTimeBetween(pid, start, end);
+        // 截断到分钟开始
+        Date start = TimeUtils.truncateToMinute(minuteTime);
+        // 截断到分钟结束（下一分钟）
+        Date end = new Date(start.getTime() + 60_000);
+        List<NurseRecords> records = nurseRecordsRepository.findByPidAndTimeBetween(pid, start, end);
         return records.isEmpty() ? null : records.get(0);
     }
 
@@ -386,5 +368,70 @@ public class ToothSyncService {
     private NurseRecordsHistory findHistoryByNurseRecordId(String nurseRecordId) {
         Query query = new Query(Criteria.where("nurseRecordId").is(nurseRecordId));
         return smartCareMongoTemplate.findOne(query, NurseRecordsHistory.class);
+    }
+
+    /**
+     * 判断是否是用户手写的记录。
+     *
+     * @param record 护理记录
+     * @return true=用户手写，false=自动同步
+     */
+    private boolean isUserWritten(NurseRecords record) {
+        // 用户手写的判断条件：
+        // 1. autoSyn = null 或 false（非自动同步）
+        // 2. 或者 username 不是系统账号
+        return !Boolean.TRUE.equals(record.getAutoSyn())
+               || !isSystemAccount(record.getUsername());
+    }
+
+    /**
+     * 判断是否是系统账号。
+     *
+     * @param username 用户名
+     * @return true=系统账号，false=用户账号
+     */
+    private boolean isSystemAccount(String username) {
+        // 系统账号判断（根据实际配置的系统账号）
+        return "系统同步".equals(username)
+               || "icu-sync".equals(username)
+               || "system".equals(username)
+               || username == null;
+    }
+
+    /**
+     * 追加数据到已有记录。
+     * 保存前重新查询数据库获取最新 desc，避免用户正在编辑时的竞态问题。
+     */
+    private void appendToExistingRecord(NurseRecords existingRecord, String desc,
+                                        Bedside record, String pid) {
+        // [修改记录] 2026-08-22 易绍龙: 保存前重新查询，获取用户最新编辑内容
+        NurseRecords latest = nurseRecordsRepository.findById(existingRecord.getId()).orElse(existingRecord);
+        String oldDesc = latest.getDesc();
+
+        // 防止重复追加
+        if (StringUtils.hasText(oldDesc) && oldDesc.contains(desc)) {
+            log.info("[ToothSync] 同步内容已存在于记录中，跳过追加 pid={}, nurseRecordId={}",
+                    pid, existingRecord.getId());
+            return;
+        }
+
+        String mergedDesc = StringUtils.hasText(oldDesc)
+                ? oldDesc + "\n" + desc
+                : desc;
+        latest.setDesc(mergedDesc);
+        nurseRecordsRepository.save(latest);
+
+        // 创建牙齿 history 记录
+        NurseRecordsHistory newHistory = new NurseRecordsHistory();
+        newHistory.setPid(pid);
+        newHistory.setSyncType(SYNC_TYPE);
+        newHistory.setTubeExeId(record.getId());
+        newHistory.setTubeType(SYNC_TYPE);
+        newHistory.setShiftType("");
+        newHistory.setTubeRecordTime(record.getTime());
+        newHistory.setNurseRecordId(existingRecord.getId());
+        newHistory.setSyncTime(new Date());
+        newHistory.setSyncContent(desc);
+        nurseRecordsHistoryRepository.insert(newHistory);
     }
 }
