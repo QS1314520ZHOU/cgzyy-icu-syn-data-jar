@@ -615,8 +615,12 @@ public class TubeNursingSyncService {
             if (value != null && StringUtils.hasText(value.toString())) {
                 fields.append(fieldConfig.getName())
                       .append(":")
-                      .append(value.toString().trim())
-                      .append(";");
+                      .append(value.toString().trim());
+                // 如果配置了单位，拼接单位
+                if (StringUtils.hasText(fieldConfig.getUnit())) {
+                    fields.append(fieldConfig.getUnit());
+                }
+                fields.append(";");
             }
         }
 

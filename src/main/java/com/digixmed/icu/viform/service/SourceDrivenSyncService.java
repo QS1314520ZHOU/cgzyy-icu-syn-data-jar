@@ -139,17 +139,19 @@ public class SourceDrivenSyncService {
         List<String> codeList = new ArrayList<>(allCodes);
         log.info("[SourceSync] 规则[{}] 涉及 codes: {}", rule.getName(), codeList);
 
-        // 3. 批量拉取 bedside
-        List<Bedside> allBedsides = bedsideRepository.findByPidInAndCodeIn(pids, codeList);
-        log.info("[SourceSync] 规则[{}] 批量拉取 bedside: {} 条", rule.getName(), allBedsides.size());
-
-        // 4. 建索引: pid → code → timeMs → Bedside（同 time 取 editTime 最新）
-        Map<String, Map<String, Map<Long, Bedside>>> index = buildIndex(allBedsides);
-
-        // 5. lookback 窗口
+        // 3. lookback 窗口（提前计算，用于 MongoDB 查询过滤）
         Date now = new Date();
         long lookbackMs = sourceSyncProperties.getLookbackMinutes() * 60_000L;
         Date windowStart = new Date(now.getTime() - lookbackMs);
+
+        // 4. 批量拉取 bedside（只查 lookback 窗口内的有效数据，避免全量加载）
+        List<Bedside> allBedsides = bedsideRepository.findByPidInAndCodeInAndValidTrueAndTimeAfter(
+                pids, codeList, windowStart);
+        log.info("[SourceSync] 规则[{}] 批量拉取 bedside: {} 条 (窗口={})",
+                rule.getName(), allBedsides.size(), sourceSyncProperties.getLookbackMinutes() + "min");
+
+        // 5. 建索引: pid → code → timeMs → Bedside（同 time 取 editTime 最新）
+        Map<String, Map<String, Map<Long, Bedside>>> index = buildIndex(allBedsides);
         long toleranceMs = sourceSyncProperties.getTimeToleranceSeconds() * 1000L;
 
         String editUser = sourceSyncProperties.getEditUser();

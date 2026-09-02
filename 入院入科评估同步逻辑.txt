@@ -1,0 +1,42 @@
+入院评估单与入科评估单同步逻辑
+两份表单的关系
+入院评估单（formCode: ruyuanhulipinggudan）
+入科评估单（formCode: zhuanruhulipinggudan）
+两者结构完全一致，共享相同的字段映射和配置，从相同的源数据写入，互不干扰。配置允许它们未来各自独立，但目前是同步的。
+
+核心数据流
+数据源 → 目标表单
+
+来源	目标字段	含义
+床边记录 param_tengTong_score	ttpf	疼痛评分
+床边记录 param_yaChuang_score	braden / branden2	Braden压疮评分/结论
+床边记录 param_score_adl	shzlnl + shzlnl1~4	ADL评分/依赖等级
+床边记录 param_score_unPlannedCGZYY	dght / dght2	非计划拔管评分/结论
+床边记录 生命体征	xy / tw / mb / hx	血压/体温/脉搏/呼吸
+床边记录 param_Yishi	yszt1 / yszt8	意识状态
+跌倒评估 total	morde	Morse跌倒评分
+跌倒评估 conclusion	morde2	跌倒风险结论
+跌倒评估 因子标记	lcpdf / mpff	临床判定法/Morse评分法选项
+源数据选取逻辑（FirstAssessmentSourceSelector.java）
+对每个 ICU 入科患者，查询其入科后的第一条有效床边记录和第一条有效跌倒评估
+按 (pid, code) 分组，过滤入科后（含1小时提前窗口）的记录
+按 time → editTime → _id 排序，取第一条
+每个字段提取对应值（如血压为收缩压/舒张压拼接，意识状态中文→拼音码映射）
+同步策略（FirstAdmissionAssessmentSyncService.java）
+场景	行为
+表单不存在 + 源数据存在	创建新文档，写入 fieldDataList
+表单已存在 + 值有变化	增量更新，仅更新变化的字段
+值完全相同	不写入，无任何数据库操作
+源值为空	不覆盖现有值
+使用 DFormFieldValueComparator 做字段级比较（支持字符串、数值、列表类型）。
+
+动态频次控制
+0-1小时（新鲜期）：每个周期（3分钟）都同步
+1-24小时（稳定期）：每小时同步一次（冷却机制）
+超过24小时：不再同步
+由 FirstAdmissionAssessmentSyncScheduler.java 定时触发（默认3分钟），另有启动补偿任务。
+
+调用入口
+定时任务：@Scheduled 每3分钟
+手动触发：POST /syn/first-admission-assessment
+两个表单字段映射完全一致，未来若需差异化，通过 FormOptionConfig 分别配置即可。

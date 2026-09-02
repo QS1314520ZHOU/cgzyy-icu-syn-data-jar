@@ -103,13 +103,13 @@ public class FirstAssessmentSourceSelector {
 
             Map<String, Bedside> codeToFirst = new HashMap<>();
 
-            // 允许入科前1小时内的评估（整点评估场景，如15:16入科，15:00评估）
-            Date adjustedAdmissionTime = new Date(admissionTime.getTime() - 60 * 60 * 1000);
+            // 允许入科前10分钟内的评估
+            Date adjustedAdmissionTime = new Date(admissionTime.getTime() - 10 * 60 * 1000);
 
             for (Map.Entry<String, List<Bedside>> codeEntry : pidEntry.getValue().entrySet()) {
                 String code = codeEntry.getKey();
 
-                // 筛选有效记录：valid=true, strVal非空, time >= 入科前1小时
+                // 筛选有效记录：valid=true, strVal非空, time >= 入科前10分钟
                 List<Bedside> validList = codeEntry.getValue().stream()
                         .filter(b -> Boolean.TRUE.equals(b.getValid()))
                         .filter(b -> b.getStrVal() != null && !b.getStrVal().trim().isEmpty())

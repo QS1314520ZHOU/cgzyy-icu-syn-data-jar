@@ -8,6 +8,9 @@ import com.digixmed.icu.viform.service.OrderSyncService;
 import com.digixmed.icu.viform.service.ParamTimedSyncService;
 import com.digixmed.icu.viform.service.FirstAdmissionAssessmentSyncService;
 import com.digixmed.icu.viform.service.SourceDrivenSyncService;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -30,6 +33,7 @@ import java.util.*;
 @RestController
 @RequestMapping("/syn")
 @RequiredArgsConstructor
+@Tag(name = "ICU 数据同步接口", description = "手动触发、调试、健康检查")
 public class SynDataController {
 
     private final AdmittedPatientBedsideService service;
@@ -40,7 +44,7 @@ public class SynDataController {
     private final SyncGroupsProperties syncGroupsProperties;
     private final OrderSyncProperties orderSyncProperties;
 
-    /** 健康检查。 */
+    @Operation(summary = "健康检查", description = "返回服务状态、当前时间、同步分组概况、医嘱同步配置等信息")
     @GetMapping("/health")
     public Map<String, Object> health() {
         log.debug("[API] GET /syn/health");
@@ -74,7 +78,8 @@ public class SynDataController {
         return info;
     }
 
-    /** 手动触发一次完整处理流程（原有逻辑，向后兼容）。 */
+    @Operation(summary = "bedside 分发处理",
+            description = "查询所有在院患者的 bedside 记录，按 code 分发给对应处理器执行业务逻辑")
     @PostMapping("/process")
     public Map<String, Object> process() {
         log.info("[API] POST /syn/process - 手动触发策略分发同步");
@@ -85,11 +90,10 @@ public class SynDataController {
         return Map.of("handled", count, "type", "strategy-dispatch", "elapsedMs", elapsed);
     }
 
-    /**
-     * 手动触发 param 定时同步（可选择指定分组和目标时间点）。
-     *
-     * <p>不传参数时，对所有分组的"当前最近时间点"执行一次补偿同步。</p>
-     */
+    @Operation(summary = "值前推补写同步",
+            description = "在固定时间点（如02:00、06:00、10:00...），把bedside中最新的一条有效数据复制到目标时间点。"
+                    + "用于护士未及时录入时，系统自动用最近一次的值补上。"
+                    + "不传参数时，对当前时间窗口内的分组执行一次补偿同步。")
     @PostMapping("/param-sync")
     public Map<String, Object> paramSync() {
         log.info("[API] POST /syn/param-sync - 手动触发 param 定时同步");
@@ -143,9 +147,8 @@ public class SynDataController {
         return Map.of("message", "手动触发完成", "triggered", triggered, "elapsedMs", elapsed);
     }
 
-    /**
-     * 手动触发医嘱同步（全量扫描）。
-     */
+    @Operation(summary = "医嘱同步",
+            description = "扫描在院患者的医嘱数据（如鼻饲液、饮食类型），同步到bedside对应code中")
     @PostMapping("/order-sync")
     public Map<String, Object> orderSync() {
         log.info("[API] POST /syn/order-sync - 手动触发医嘱同步");
@@ -156,9 +159,10 @@ public class SynDataController {
         return Map.of("message", "医嘱同步完成", "stats", result, "elapsedMs", elapsed);
     }
 
-    /**
-     * 手动触发源联动同步（全量扫描所有 enabled 规则）。
-     */
+    @Operation(summary = "源联动同步",
+            description = "当某个触发code（如IABP反博压、心输出量指数）出现新数据时，"
+                    + "把同一时间点的其他code值联动写入目标code。"
+                    + "例如：IABP反博压记录出现时，把同时刻的心率、有创血压联动写到iabp心率、iabp收缩压等字段")
     @PostMapping("/source-sync")
     public Map<String, Object> sourceSync() {
         log.info("[API] POST /syn/source-sync - 手动触发源联动同步");
@@ -182,9 +186,10 @@ public class SynDataController {
                 Map.of("total", 0, "success", 0, "skip", 0, "fail", 0));
     }
 
-    /**
-     * 手动触发首次入科评估同步。
-     */
+    @Operation(summary = "入科评估全量同步",
+            description = "从bedside和score中取所有当天入科患者的第一次有效评估数据，"
+                    + "增量同步到入院/入科护理评估单（dFormData）。"
+                    + "包括：疼痛评分、Braden压疮、ADL生活自理、非计划拔管、生命体征、意识状态、跌倒评估等")
     @PostMapping("/first-admission-assessment")
     public Map<String, Object> firstAdmissionAssessment() {
         log.info("[API] POST /syn/first-admission-assessment - 手动触发首次入科评估同步");
@@ -196,11 +201,12 @@ public class SynDataController {
         return Map.of("success", true, "data", result.toMap(), "elapsedMs", elapsed);
     }
 
-    /**
-     * 按 patientId 手动触发入院/入科评估单同步。
-     */
+    @Operation(summary = "按患者ID同步入科评估",
+            description = "指定patientId，手动触发该患者的入院/入科评估单同步。"
+                    + "跳过动态频次控制，直接查询该患者的bedside和score数据并同步到评估单")
     @PostMapping("/first-admission-assessment/{patientId}")
-    public Map<String, Object> firstAdmissionAssessmentByPatientId(@PathVariable String patientId) {
+    public Map<String, Object> firstAdmissionAssessmentByPatientId(
+            @Parameter(description = "患者ID（patient._id）") @PathVariable String patientId) {
         log.info("[API] POST /syn/first-admission-assessment/{} - 手动同步指定患者", patientId);
         long start = System.currentTimeMillis();
         FirstAdmissionAssessmentSyncService.SyncResult result =
@@ -210,9 +216,11 @@ public class SynDataController {
         return Map.of("success", true, "patientId", patientId, "data", result.toMap(), "elapsedMs", elapsed);
     }
 
-    /** 调试：查询某在院患者的 bedside 记录。 */
+    @Operation(summary = "查询患者bedside记录",
+            description = "查询指定在院患者的所有bedside记录，用于调试和排查数据同步问题")
     @GetMapping("/patients/{patientId}/bedsides")
-    public List<Bedside> bedsides(@PathVariable String patientId) {
+    public List<Bedside> bedsides(
+            @Parameter(description = "患者ID（patient._id）") @PathVariable String patientId) {
         log.debug("[API] GET /syn/patients/{}/bedsides", patientId);
         List<Bedside> result = service.findBedsidesForPatient(patientId);
         log.info("[API] GET /syn/patients/{}/bedsides: 返回 {} 条", patientId, result.size());

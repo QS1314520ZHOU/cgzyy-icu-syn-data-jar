@@ -19,7 +19,7 @@ public class TemperatureMeasureSyncScheduler {
 
     private final TemperatureMeasureSyncService temperatureMeasureSyncService;
 
-    @Scheduled(fixedDelayString = "${tube-nursing-sync.scan-interval-ms:60000}",
+    @Scheduled(fixedDelayString = "${tube-nursing-sync.scan-interval-ms:300000}",
             initialDelayString = "${tube-nursing-sync.initial-delay-ms:60000}")
     public void syncTemperatureMeasureRecords() {
         try {

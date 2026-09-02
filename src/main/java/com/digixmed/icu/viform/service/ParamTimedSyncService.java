@@ -11,6 +11,7 @@ import com.digixmed.icu.viform.repository.smartcare.BedsideSyncLogRepository;
 import com.digixmed.icu.viform.repository.smartcare.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
@@ -50,6 +51,12 @@ public class ParamTimedSyncService {
     /** 在院状态常量 */
     private static final String STATUS_ADMITTED = "admitted";
 
+    /** 已废弃不再同步的code列表 */
+    private static final Set<String> DISABLED_CODES = Set.of(
+            "param_插管方式",
+            "param_chaGuan_len"
+    );
+
     /**
      * 对指定分组在指定目标时间执行一次前推补写同步。
      *
@@ -77,14 +84,22 @@ public class ParamTimedSyncService {
             return;
         }
 
-        // 2. 批量拉取 bedside
+        // 2. 批量拉取 bedside（只查入科之后的数据，避免全量加载历史）
         List<String> patientIds = admittedPatients.stream()
                 .map(Patient::getId)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toList());
 
-        List<Bedside> allBedsides = bedsideRepository.findByPidInAndCodeIn(patientIds, group.getCodes());
-        log.info("[ParamSync] 命中 bedside 记录: {} 条", allBedsides.size());
+        // 取最早入科时间作为查询起始点
+        Date earliestAdmission = admittedPatients.stream()
+                .map(Patient::getIcuAdmissionTime)
+                .filter(Objects::nonNull)
+                .min(Date::compareTo)
+                .orElse(new Date());
+
+        List<Bedside> allBedsides = bedsideRepository.findByPidInAndCodeInAndTimeAfter(
+                patientIds, group.getCodes(), earliestAdmission);
+        log.info("[ParamSync] 命中 bedside 记录: {} 条 (起始时间={})", allBedsides.size(), earliestAdmission);
 
         // 按 pid → code → List<Bedside> 分组
         Map<String, Map<String, List<Bedside>>> bedsideTree = new HashMap<>();
@@ -113,6 +128,13 @@ public class ParamTimedSyncService {
             Map<String, List<Bedside>> codeMap = bedsideTree.getOrDefault(patient.getId(), Collections.emptyMap());
             for (String code : group.getCodes()) {
                 try {
+                    // 跳过已废弃不再同步的code
+                    if (DISABLED_CODES.contains(code)) {
+                        log.debug("[ParamSync] pid={}, code={} 已废弃，跳过", patient.getId(), code);
+                        skipCount++;
+                        continue;
+                    }
+
                     boolean ok = syncOne(patient, code, targetTime, now,
                             codeMap.getOrDefault(code, Collections.emptyList()), editUser);
                     if (ok) successCount++; else skipCount++;

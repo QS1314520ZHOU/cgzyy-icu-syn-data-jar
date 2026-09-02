@@ -20,6 +20,9 @@ public class TubeFieldConfig {
     /** 可选值列表 */
     private List<String> valueList;
 
+    /** 单位（如 "cm"、"ml" 等） */
+    private String unit;
+
     /** 组件类型（如下拉框、输入框等） */
     private String componentType;
 

@@ -243,7 +243,8 @@ public class TemperatureMeasureSyncService {
 
     /**
      * 处理单个患者的降温/升温措施记录。
-     * <p>按分钟分组，同一分钟的降温+升温合并为一条 desc。</p>
+     * <p>按分钟分组，同一分钟的降温+升温合并为一条 desc。
+     * 只在每天8:00、16:00、0:00三个时间点进行同步，其他时间点的数据不管。</p>
      */
     private void processPatientRecords(String pid, String patientName,
                                         List<Bedside> records,
@@ -265,10 +266,24 @@ public class TemperatureMeasureSyncService {
         }
 
         SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmm");
+        Calendar calendar = Calendar.getInstance();
 
         for (Map.Entry<String, List<Bedside>> entry : byMinute.entrySet()) {
             String minuteKey = entry.getKey();
             List<Bedside> minuteRecords = entry.getValue();
+
+            // 只在每天8:00、16:00、0:00三个时间点进行同步
+            Bedside firstRecord = minuteRecords.get(0);
+            Date minuteTime = firstRecord.getTime();
+            calendar.setTime(minuteTime);
+            int hour = calendar.get(Calendar.HOUR_OF_DAY);
+            int minute = calendar.get(Calendar.MINUTE);
+            if (!isTargetTimePoint(hour, minute)) {
+                log.debug("[TempMeasureSync] 非目标时间点，跳过 pid={}, time={}, hour={}, minute={}",
+                        pid, minuteTime, hour, minute);
+                skipped.incrementAndGet();
+                continue;
+            }
 
             try {
                 // 构建 desc
@@ -278,9 +293,7 @@ public class TemperatureMeasureSyncService {
                     continue;
                 }
 
-                // 取第一条记录的时间和操作人信息
-                Bedside firstRecord = minuteRecords.get(0);
-                Date minuteTime = firstRecord.getTime();
+                // 取第一条记录的操作人信息（firstRecord和minuteTime已在前面定义）
                 String editUserId = firstRecord.getEditUser();
                 Account editAccount = StringUtils.hasText(editUserId) ? accountMap.get(editUserId) : null;
                 String trueName = editAccount != null ? editAccount.getTrueName() : "";
@@ -512,6 +525,20 @@ public class TemperatureMeasureSyncService {
         nurseRecord.setDrugExeManualFlag(false);
         nurseRecord.setAutoSyn(false);
         return nurseRecord;
+    }
+
+    /**
+     * 判断是否是目标时间点（8:00、16:00、0:00）。
+     *
+     * @param hour   小时（0-23）
+     * @param minute 分钟（0-59）
+     * @return true=是目标时间点，false=不是
+     */
+    private boolean isTargetTimePoint(int hour, int minute) {
+        // 目标时间点：0:00、8:00、16:00
+        return (hour == 0 && minute == 0)
+                || (hour == 8 && minute == 0)
+                || (hour == 16 && minute == 0);
     }
 
     /**

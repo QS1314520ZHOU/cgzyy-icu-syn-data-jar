@@ -12,7 +12,7 @@ import java.util.List;
 public interface NurseRecordsRepository extends MongoRepository<NurseRecords, String> {
 
     /**
-     * 查询指定患者在指定时间范围内的自动同步护理记录。
+     * 查询指定患者在指定时间范围内的护理记录。
      */
-    List<NurseRecords> findByPidAndAutoSynTrueAndTimeBetween(String pid, Date start, Date end);
+    List<NurseRecords> findByPidAndTimeBetween(String pid, Date start, Date end);
 }
