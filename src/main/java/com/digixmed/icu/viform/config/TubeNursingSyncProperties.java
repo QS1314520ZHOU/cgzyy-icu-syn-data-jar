@@ -23,7 +23,7 @@ public class TubeNursingSyncProperties {
 	private long initialDelayMs = 30_000L;
 
 	/** 同步时间范围（天）。只同步最近N天内的管道记录。 */
-	private int syncDays = 3;
+	private int syncDays = 1;
 
 	/** 每批处理的患者数量。避免一次性查询过多患者导致数据库压力过大。 */
 	private int batchSize = 20;
