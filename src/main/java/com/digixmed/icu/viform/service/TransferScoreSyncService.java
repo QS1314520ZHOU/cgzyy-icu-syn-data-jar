@@ -351,7 +351,7 @@ public class TransferScoreSyncService {
             if (parts.length >= 2) {
                 String transferLevel = parts[0].trim();
                 String mewsScore = parts[1].trim();
-                return "转运分级标准:" + transferLevel + ",MEWS评分:" + mewsScore;
+                return "转运分级标准:" + transferLevel + ",MEWS评分:" + mewsScore+"分";
             }
         }
 
@@ -359,7 +359,7 @@ public class TransferScoreSyncService {
         if (strVal.contains("级")) {
             return "转运分级标准:" + strVal;
         } else {
-            return "MEWS评分:" + strVal;
+            return "MEWS评分:" + strVal+"分";
         }
     }
 
