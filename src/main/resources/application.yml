@@ -44,13 +44,12 @@ sync:
         - param_NIBP部位
 
     - name: intubation-airway
-      description: 插管方式/查管长度/床头抬高/吸痰护理
+      description: 插管方式/查管长度/床头抬高
       times: ["00:00","08:00","16:00"]
       codes:
         - param_插管方式
         - param_chaGuan_len
         - param_chuangtouTaigao
-        - param_吸痰护理
 
     - name: iabp
       description: IABP 主动脉球囊反搏相关

@@ -63,6 +63,11 @@ public class TubeNursingSyncService {
     /** 在院状态常量 */
     private static final String STATUS_ADMITTED = "admitted";
 
+    /** 护士角色集合 */
+    private static final Set<String> NURSE_ROLES = new HashSet<>(Arrays.asList(
+            "Nurse", "Matron", "PracticeNurse", "NurseLeader"
+    ));
+
     /** 班次类型常量 */
     private static final String SHIFT_MORNING = "MORNING";
     private static final String SHIFT_AFTERNOON = "AFTERNOON";
@@ -509,7 +514,7 @@ public class TubeNursingSyncService {
                         // 其他同步记录 → 管道数据拼接到已有记录前面
                         String oldDesc = existingAtTime.getDesc();
                         String mergedDesc = StringUtils.hasText(desc)
-                                ? desc + "\n" + oldDesc
+                                ? desc + "；" + oldDesc
                                 : oldDesc;
                         existingAtTime.setDesc(mergedDesc);
                         existingAtTime.setUsername(unit.recordUserName);
@@ -535,6 +540,14 @@ public class TubeNursingSyncService {
                     }
                 } else {
                     // 无已有记录 → 新建（标记为自动同步）
+                    // 根据管道护理记录创建者，是护士则用，医生或其他角色跳过
+                    if (!StringUtils.hasText(unit.accountProfession) || !NURSE_ROLES.contains(unit.accountProfession)) {
+                        unit.recordUserId = null;
+                        unit.recordUserName = "";
+                        unit.accountUsername = "";
+                        unit.accountProfession = "";
+                    }
+
                     NurseRecords created = createMergedNurseRecord(pid, patientName, unit, desc);
                     created.setAutoSyn(true);  // 标记为自动同步
                     NurseRecords saved = nurseRecordsRepository.insert(created);
@@ -681,7 +694,7 @@ public class TubeNursingSyncService {
         }
 
         String mergedDesc = StringUtils.hasText(oldDesc)
-                ? oldDesc + "\n" + desc
+                ? oldDesc + "；" + desc
                 : desc;
         latest.setDesc(mergedDesc);
         // [修改记录] 2026-08-22 易绍龙: 追加时不覆盖用户的 username/userId/trueName/professions
