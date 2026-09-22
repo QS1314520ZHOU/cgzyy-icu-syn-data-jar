@@ -14,9 +14,6 @@ import com.digixmed.icu.viform.repository.smartcare.NurseRecordsRepository;
 import com.digixmed.icu.viform.repository.smartcare.PatientRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.data.mongodb.core.MongoTemplate;
-import org.springframework.data.mongodb.core.query.Criteria;
-import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -31,13 +28,13 @@ import java.util.stream.Collectors;
  * 统一 bedside 数据同步服务。
  *
  * <p>将评估评分、皮肤护理、牙齿、降温/升温、转运评分、呼吸机参数六种 bedside 数据
- * 统一处理，确保同一时间点的多种数据合并到同一条护理记录中，避免并发竞态导致的重复记录。</p>
+ * 统一处理，确保同一时间点的多种数据合并到同一条护理记录中。</p>
  *
  * <p>核心策略：</p>
  * <ul>
- *   <li>六个 syncType 在同一方法内按固定顺序串行处理</li>
- *   <li>后续 syncType 能发现前面 syncType 已创建的 nurseRecord 并追加内容</li>
- *   <li>每个 syncType 通过 nurseRecordsHistory 独立去重</li>
+ *   <li>先按 (pid, 分钟) 聚齐全部 syncType 的待写内容，再一次决定新建/追加</li>
+ *   <li>目标护理记录优先用 history.nurseRecordId 定位（确定性，不依赖时间范围查询）</li>
+ *   <li>每个 syncType 通过 nurseRecordsHistory 独立去重；同分钟各类型 history 共享同一 nurseRecordId</li>
  *   <li>用户手写记录追加，不覆盖</li>
  * </ul>
  */
@@ -52,7 +49,6 @@ public class BedsideSyncService {
     private final NurseRecordsHistoryRepository nurseRecordsHistoryRepository;
     private final AccountRepository accountRepository;
     private final TubeNursingSyncProperties properties;
-    private final MongoTemplate smartCareMongoTemplate;
 
     /** 呼吸机参数同步开关（默认关闭） */
     @Value("${ventilator-sync.enabled:false}")
@@ -251,37 +247,9 @@ public class BedsideSyncService {
                 log.info("[BedsideSync] 批次 {}/{} 开始, 患者数={}", batchNo, totalBatches, batchPids.size());
 
                 try {
-                    // 批量查询意识状态记录（所有 syncType 共用）
-                    List<Bedside> consciousnessRecords = bedsideRepository.findByPidInAndCodeAndTimeAfter(
-                            batchPids, "param_Yishi", syncStartTime);
-                    Map<String, String> consciousnessEditUserMap = new HashMap<>();
-                    for (Bedside cr : consciousnessRecords) {
-                        if (StringUtils.hasText(cr.getEditUser())) {
-                            String key = cr.getPid() + "|" + formatMinute(cr.getTime());
-                            consciousnessEditUserMap.put(key, cr.getEditUser());
-                        }
-                    }
-
-                    // 对每个 syncType 串行处理
-                    for (SyncType st : ALL_SYNC_TYPES) {
-                        // 呼吸机同步开关
-                        if (st == ST_VENTILATOR && !ventilatorSyncEnabled) {
-                            log.debug("[BedsideSync] ventilator-sync.enabled=false，跳过 VENTILATOR");
-                            continue;
-                        }
-                        try {
-                            processSyncType(st, batchPids, patientNameMap,
-                                    syncStartTime, consciousnessEditUserMap,
-                                    syncedRecords, skippedRecords, updatedRecords, failedRecords);
-                        } catch (Exception e) {
-                            log.error("[BedsideSync] syncType={} 批次 {}/{} 异常",
-                                    st.syncType, batchNo, totalBatches, e);
-                            failedRecords.incrementAndGet();
-                        }
-                    }
-
+                    processBatch(batchPids, patientNameMap, syncStartTime,
+                            syncedRecords, skippedRecords, updatedRecords, failedRecords);
                     log.info("[BedsideSync] 批次 {}/{} 完成", batchNo, totalBatches);
-
                 } catch (Exception e) {
                     log.error("[BedsideSync] 批次 {}/{} 异常", batchNo, totalBatches, e);
                 }
@@ -313,174 +281,339 @@ public class BedsideSyncService {
     }
 
     // ══════════════════════════════════════════════════════════════
-    //  按 syncType 处理
+    //  按 (pid, 分钟) 聚齐后一次落库
     // ══════════════════════════════════════════════════════════════
 
+    /** 单个 syncType 在某分钟的待写内容 */
+    private static class TypeContent {
+        final SyncType syncType;
+        final String desc;
+        final String bedsideRecordId;
+        final Date recordTime;
+        final String editUserId;
+        final String editUserName;
+        final String accountUsername;
+        final String accountProfession;
+
+        TypeContent(SyncType syncType, String desc, String bedsideRecordId, Date recordTime,
+                    String editUserId, String editUserName, String accountUsername, String accountProfession) {
+            this.syncType = syncType;
+            this.desc = desc;
+            this.bedsideRecordId = bedsideRecordId;
+            this.recordTime = recordTime;
+            this.editUserId = editUserId;
+            this.editUserName = editUserName;
+            this.accountUsername = accountUsername;
+            this.accountProfession = accountProfession;
+        }
+    }
+
     /**
-     * 处理单个 syncType 的同步。
+     * 处理一批患者：先聚齐全部 syncType，再按 (pid, 分钟) 合并写入。
      */
-    private void processSyncType(SyncType st,
-                                  List<String> batchPids,
-                                  Map<String, String> patientNameMap,
-                                  Date syncStartTime,
-                                  Map<String, String> consciousnessEditUserMap,
-                                  AtomicInteger synced, AtomicInteger skipped,
-                                  AtomicInteger updated, AtomicInteger failed) {
+    private void processBatch(List<String> batchPids,
+                              Map<String, String> patientNameMap,
+                              Date syncStartTime,
+                              AtomicInteger synced, AtomicInteger skipped,
+                              AtomicInteger updated, AtomicInteger failed) {
+        // 1. 意识状态编辑人（新建时优先）
+        List<Bedside> consciousnessRecords = bedsideRepository.findByPidInAndCodeAndTimeAfter(
+                batchPids, "param_Yishi", syncStartTime);
+        Map<String, String> consciousnessEditUserMap = new HashMap<>();
+        for (Bedside cr : consciousnessRecords) {
+            if (StringUtils.hasText(cr.getEditUser())) {
+                consciousnessEditUserMap.put(cr.getPid() + "|" + formatMinute(cr.getTime()), cr.getEditUser());
+            }
+        }
 
-        // 查询 bedside 数据
-        List<Bedside> allRecords = bedsideRepository.findByPidInAndCodeInAndTimeAfterAndValidTrue(
-                batchPids, st.codes, syncStartTime);
-
-        if (allRecords.isEmpty()) {
-            log.info("[BedsideSync] syncType={} 无数据，跳过", st.syncType);
+        // 2. 有效 syncType 与 code → type 映射
+        List<SyncType> activeTypes = new ArrayList<>();
+        Map<String, SyncType> codeToType = new HashMap<>();
+        List<String> allCodes = new ArrayList<>();
+        for (SyncType st : ALL_SYNC_TYPES) {
+            if (st == ST_VENTILATOR && !ventilatorSyncEnabled) {
+                continue;
+            }
+            activeTypes.add(st);
+            for (String code : st.codes) {
+                codeToType.put(code, st);
+                allCodes.add(code);
+            }
+        }
+        if (allCodes.isEmpty()) {
             return;
         }
 
-        // 批量查询账户信息
+        // 3. 一次拉取本批全部相关 bedside
+        List<Bedside> allRecords = bedsideRepository.findByPidInAndCodeInAndTimeAfterAndValidTrue(
+                batchPids, allCodes, syncStartTime);
+        if (allRecords.isEmpty()) {
+            log.info("[BedsideSync] 本批无 bedside 数据，跳过");
+            return;
+        }
+
+        // 4. 账户
         Set<String> editUserIds = allRecords.stream()
                 .map(Bedside::getEditUser)
                 .filter(StringUtils::hasText)
                 .collect(Collectors.toSet());
-        Map<String, Account> accountMap = new HashMap<>();
-        if (!editUserIds.isEmpty()) {
-            List<Account> accounts = accountRepository.findByIdIn(editUserIds);
-            for (Account account : accounts) {
-                accountMap.put(account.getId(), account);
+        Map<String, Account> accountMap = loadAccounts(editUserIds);
+
+        // 5. 全量 history：类型去重键 + 分钟级 nurseRecordId 索引
+        List<NurseRecordsHistory> allHistories = nurseRecordsHistoryRepository.findByPidIn(batchPids);
+        Map<String, String> historyTypeKeys = new HashMap<>();
+        Map<String, String> nurseRecordIdByMinute = new HashMap<>();
+        for (NurseRecordsHistory h : allHistories) {
+            if (h.getTubeRecordTime() == null || !StringUtils.hasText(h.getPid())) {
+                continue;
+            }
+            Date minute = TimeUtils.truncateToMinute(h.getTubeRecordTime());
+            String minuteKey = h.getPid() + "|" + formatMinute(minute);
+            String typeKey = minuteKey + "|" + h.getSyncType();
+            historyTypeKeys.put(typeKey, typeKey);
+            if (StringUtils.hasText(h.getNurseRecordId())) {
+                nurseRecordIdByMinute.putIfAbsent(minuteKey, h.getNurseRecordId());
             }
         }
 
-        // 批量查询历史（按 syncType 独立去重）
-        List<NurseRecordsHistory> histories = nurseRecordsHistoryRepository.findByPidInAndSyncType(
-                batchPids, st.syncType);
-        Map<String, NurseRecordsHistory> historyMap = new HashMap<>();
-        for (NurseRecordsHistory history : histories) {
-            String key = buildHistoryKey(history.getPid(), st.syncType, history.getTubeRecordTime());
-            historyMap.put(key, history);
+        // 6. 按 (pid, 分钟) 聚齐全部类型
+        Map<String, List<Bedside>> byMinute = new LinkedHashMap<>();
+        for (Bedside r : allRecords) {
+            if (!StringUtils.hasText(r.getPid()) || !StringUtils.hasText(r.getStrVal())) {
+                continue;
+            }
+            if (r.getTime() == null || !codeToType.containsKey(r.getCode())) {
+                continue;
+            }
+            String key = r.getPid() + "|" + formatMinute(r.getTime());
+            byMinute.computeIfAbsent(key, k -> new ArrayList<>()).add(r);
         }
 
-        // 按 (pid, 分钟时间) 分组
-        Map<String, List<Bedside>> groupedRecords = allRecords.stream()
-                .filter(r -> StringUtils.hasText(r.getStrVal()))
-                .collect(Collectors.groupingBy(
-                        r -> r.getPid() + "|" + formatMinute(r.getTime()),
-                        LinkedHashMap::new,
-                        Collectors.toList()
-                ));
-
-        for (Map.Entry<String, List<Bedside>> entry : groupedRecords.entrySet()) {
-            String pid = entry.getKey().split("\\|")[0];
-            List<Bedside> records = entry.getValue();
-            if (!StringUtils.hasText(pid) || records.isEmpty()) continue;
-
-            String patientName = patientNameMap.getOrDefault(pid, "");
-
+        // 7. 每个分钟点只写一次护理记录
+        for (Map.Entry<String, List<Bedside>> entry : byMinute.entrySet()) {
+            String[] parts = entry.getKey().split("\\|", 2);
+            if (parts.length < 2) {
+                continue;
+            }
+            String pid = parts[0];
+            List<Bedside> minuteRecords = entry.getValue();
             try {
-                Date recordTime = records.get(0).getTime();
-                Date minuteTime = TimeUtils.truncateToMinute(recordTime);
-
-                // syncType 特殊过滤
-                if (!passFilter(st, records, minuteTime)) {
-                    skipped.incrementAndGet();
-                    continue;
-                }
-
-                // syncType 特殊前置校验（如 VENTILATOR 必须有呼吸机模式）
-                if (!passPreCheck(st, records)) {
-                    skipped.incrementAndGet();
-                    continue;
-                }
-
-                String historyKey = buildHistoryKey(pid, st.syncType, recordTime);
-                NurseRecordsHistory existingHistory = historyMap.get(historyKey);
-
-                // 已同步过则跳过
-                if (existingHistory != null) {
-                    skipped.incrementAndGet();
-                    log.info("[BedsideSync] syncType={} 已同步过，跳过 pid={}, time={}", st.syncType, pid, minuteTime);
-                    continue;
-                }
-
-                // 构建 desc
-                String desc = buildDescForType(st, records);
-                if (!StringUtils.hasText(desc)) {
-                    skipped.incrementAndGet();
-                    continue;
-                }
-
-                // 取第一条记录的编辑人信息
-                Bedside firstRecord = records.get(0);
-                String editUserId = firstRecord.getEditUser();
-                Account editAccount = StringUtils.hasText(editUserId) ? accountMap.get(editUserId) : null;
-                String editUserName = editAccount != null ? editAccount.getTrueName() : "";
-                String accountUsername = editAccount != null ? editAccount.getUsername() : "";
-                String accountProfession = editAccount != null ? editAccount.getProfession() : "";
-
-                // 检查同一时间点是否已有记录（可能是前面 syncType 创建的，也可能是用户手写的）
-                NurseRecords existingAtTime = findExistingAutoSynRecord(pid, minuteTime);
-
-                if (existingAtTime != null) {
-                    if (isUserWritten(existingAtTime)) {
-                        // 用户手写 → 追加
-                        appendToExistingRecord(existingAtTime, desc, st.syncType, firstRecord.getId(), recordTime, pid);
-                        synced.incrementAndGet();
-                        log.info("[BedsideSync] syncType={} 追加到用户记录 pid={}, nurseRecordId={}",
-                                st.syncType, pid, existingAtTime.getId());
-                    } else {
-                        // 自动同步记录 → 拼接
-                        mergeToExistingRecord(existingAtTime, desc, st.syncType, firstRecord.getId(), recordTime, pid,
-                                editUserId, editUserName, accountUsername, accountProfession);
-                        synced.incrementAndGet();
-                        log.info("[BedsideSync] syncType={} 拼接到同步记录 pid={}, nurseRecordId={}",
-                                st.syncType, pid, existingAtTime.getId());
-                    }
-                } else {
-                    // 无已有记录 → 新建
-                    // 优先取意识状态编辑人，没有则 fallback
-                    String consciousnessKey = pid + "|" + formatMinute(recordTime);
-                    String consciousnessUserId = consciousnessEditUserMap.get(consciousnessKey);
-                    Account consciousnessAccount = StringUtils.hasText(consciousnessUserId)
-                            ? accountMap.get(consciousnessUserId) : null;
-
-                    if (consciousnessAccount != null && NurseRoleUtils.isNurseRole(consciousnessAccount)) {
-                        editUserId = consciousnessUserId;
-                        editUserName = consciousnessAccount.getTrueName();
-                        accountUsername = consciousnessAccount.getUsername();
-                        accountProfession = consciousnessAccount.getProfession();
-                    } else if (editAccount != null && NurseRoleUtils.isNurseRole(editAccount)) {
-                        // 当前编辑人是护士 → 用当前编辑人（已在上方赋值）
-                    } else {
-                        editUserId = null;
-                        editUserName = "";
-                        accountUsername = "";
-                        accountProfession = "";
-                    }
-
-                    NurseRecords newRecord = createNurseRecord(pid, patientName,
-                            editUserName, editUserId, firstRecord, desc,
-                            accountUsername, accountProfession);
-                    newRecord.setAutoSyn(true);
-                    NurseRecords saved = nurseRecordsRepository.insert(newRecord);
-
-                    NurseRecordsHistory newHistory = new NurseRecordsHistory();
-                    newHistory.setPid(pid);
-                    newHistory.setSyncType(st.syncType);
-                    newHistory.setTubeExeId(firstRecord.getId());
-                    newHistory.setTubeType(st.syncType);
-                    newHistory.setShiftType("");
-                    newHistory.setTubeRecordTime(recordTime);
-                    newHistory.setNurseRecordId(saved.getId());
-                    newHistory.setSyncTime(new Date());
-                    newHistory.setSyncContent(desc);
-                    nurseRecordsHistoryRepository.insert(newHistory);
-
-                    synced.incrementAndGet();
-                    log.info("[BedsideSync] syncType={} 新增同步护理记录 pid={}", st.syncType, pid);
-                }
+                processMinuteUnit(pid, minuteRecords, codeToType, activeTypes,
+                        historyTypeKeys, nurseRecordIdByMinute,
+                        patientNameMap.getOrDefault(pid, ""),
+                        accountMap, consciousnessEditUserMap,
+                        synced, skipped, updated, failed);
             } catch (Exception e) {
-                log.error("[BedsideSync] syncType={} 同步异常 pid={}", st.syncType, pid, e);
+                log.error("[BedsideSync] 分钟单元同步异常 pid={}, time={}", pid, minuteRecords.get(0).getTime(), e);
                 failed.incrementAndGet();
             }
         }
+    }
+
+    /**
+     * 处理「同一患者同一分钟」内的全部 syncType：
+     * 已有 history 的类型跳过；未同步的类型汇总进同一条护理记录。
+     */
+    private void processMinuteUnit(String pid,
+                                   List<Bedside> minuteRecords,
+                                   Map<String, SyncType> codeToType,
+                                   List<SyncType> activeTypes,
+                                   Map<String, String> historyTypeKeys,
+                                   Map<String, String> nurseRecordIdByMinute,
+                                   String patientName,
+                                   Map<String, Account> accountMap,
+                                   Map<String, String> consciousnessEditUserMap,
+                                   AtomicInteger synced, AtomicInteger skipped,
+                                   AtomicInteger updated, AtomicInteger failed) {
+        Date minuteTime = TimeUtils.truncateToMinute(minuteRecords.get(0).getTime());
+        String minuteKey = pid + "|" + formatMinute(minuteTime);
+
+        // 按类型分组，并按 ALL_SYNC_TYPES 固定顺序输出，保证 desc 稳定
+        Map<String, List<Bedside>> recordsByType = new LinkedHashMap<>();
+        for (Bedside r : minuteRecords) {
+            SyncType st = codeToType.get(r.getCode());
+            if (st != null) {
+                recordsByType.computeIfAbsent(st.syncType, k -> new ArrayList<>()).add(r);
+            }
+        }
+
+        List<TypeContent> toWrite = new ArrayList<>();
+        for (SyncType st : activeTypes) {
+            List<Bedside> typeRecords = recordsByType.get(st.syncType);
+            if (typeRecords == null || typeRecords.isEmpty()) {
+                continue;
+            }
+
+            if (!passFilter(st, typeRecords, minuteTime) || !passPreCheck(st, typeRecords)) {
+                skipped.incrementAndGet();
+                continue;
+            }
+
+            // 已同步过：不管 bedside 数据是否变化，都不再写入
+            if (historyTypeKeys.containsKey(minuteKey + "|" + st.syncType)) {
+                skipped.incrementAndGet();
+                log.info("[BedsideSync] syncType={} 已同步过，跳过 pid={}, time={}",
+                        st.syncType, pid, minuteTime);
+                continue;
+            }
+
+            String desc = buildDescForType(st, typeRecords);
+            if (!StringUtils.hasText(desc)) {
+                skipped.incrementAndGet();
+                continue;
+            }
+
+            Bedside first = typeRecords.get(0);
+            String editUserId = first.getEditUser();
+            Account editAccount = StringUtils.hasText(editUserId) ? accountMap.get(editUserId) : null;
+            toWrite.add(new TypeContent(
+                    st, desc, first.getId(), first.getTime(),
+                    editUserId,
+                    editAccount != null ? editAccount.getTrueName() : "",
+                    editAccount != null ? editAccount.getUsername() : "",
+                    editAccount != null ? editAccount.getProfession() : ""));
+        }
+
+        if (toWrite.isEmpty()) {
+            return;
+        }
+
+        String combinedDesc = joinDescs(toWrite);
+
+        // 目标记录：1) history.nurseRecordId  2) 同分钟已有记录  3) 新建
+        NurseRecords target = resolveTargetRecord(pid, minuteTime, minuteKey, nurseRecordIdByMinute);
+
+        if (target != null) {
+            persistToExisting(target, combinedDesc, toWrite, pid, minuteTime);
+            updated.incrementAndGet();
+            log.info("[BedsideSync] 同分钟合并到已有记录 pid={}, minute={}, types={}, nurseRecordId={}",
+                    pid, minuteTime, toWrite.stream().map(t -> t.syncType.syncType).collect(Collectors.toList()),
+                    target.getId());
+        } else {
+            createMergedRecord(pid, patientName, minuteTime, combinedDesc, toWrite,
+                    accountMap, consciousnessEditUserMap, minuteKey);
+            synced.incrementAndGet();
+            log.info("[BedsideSync] 新增合并护理记录 pid={}, minute={}, types={}",
+                    pid, minuteTime, toWrite.stream().map(t -> t.syncType.syncType).collect(Collectors.toList()));
+        }
+    }
+
+    private String joinDescs(List<TypeContent> contents) {
+        return contents.stream()
+                .map(c -> c.desc)
+                .filter(StringUtils::hasText)
+                .collect(Collectors.joining("；"));
+    }
+
+    private NurseRecords resolveTargetRecord(String pid, Date minuteTime, String minuteKey,
+                                             Map<String, String> nurseRecordIdByMinute) {
+        String existingId = nurseRecordIdByMinute.get(minuteKey);
+        if (StringUtils.hasText(existingId)) {
+            NurseRecords byHistory = nurseRecordsRepository.findById(existingId).orElse(null);
+            if (byHistory != null) {
+                return byHistory;
+            }
+            // 用户已删记录时 history 仍在；不重建该分钟，但新类型仍可挂到时间窗内的其他记录
+        }
+        return findExistingAutoSynRecord(pid, minuteTime);
+    }
+
+    private void persistToExisting(NurseRecords target, String combinedDesc,
+                                   List<TypeContent> contents, String pid, Date minuteTime) {
+        String oldDesc = target.getDesc();
+        if (!StringUtils.hasText(oldDesc) || !oldDesc.contains(combinedDesc)) {
+            String merged = StringUtils.hasText(oldDesc)
+                    ? oldDesc + "；" + combinedDesc
+                    : combinedDesc;
+            target.setDesc(merged);
+            // 自动同步记录刷新操作人；用户手写记录不覆盖
+            if (!isUserWritten(target)) {
+                TypeContent first = contents.get(0);
+                target.setUsername(first.editUserName);
+                target.setUserId(first.editUserId);
+                target.setTrueName(first.accountUsername);
+                target.setProfessions(first.accountProfession);
+            }
+            nurseRecordsRepository.save(target);
+        }
+        for (TypeContent content : contents) {
+            insertHistory(pid, content, minuteTime, target.getId());
+        }
+    }
+
+    private void createMergedRecord(String pid, String patientName, Date minuteTime,
+                                    String combinedDesc, List<TypeContent> contents,
+                                    Map<String, Account> accountMap,
+                                    Map<String, String> consciousnessEditUserMap,
+                                    String minuteKey) {
+        TypeContent first = contents.get(0);
+        String editUserId = first.editUserId;
+        String editUserName = first.editUserName;
+        String accountUsername = first.accountUsername;
+        String accountProfession = first.accountProfession;
+
+        // 新建时优先取意识状态编辑人
+        String consciousnessUserId = consciousnessEditUserMap.get(minuteKey);
+        Account consciousnessAccount = StringUtils.hasText(consciousnessUserId)
+                ? accountMap.get(consciousnessUserId) : null;
+        Account editAccount = StringUtils.hasText(editUserId) ? accountMap.get(editUserId) : null;
+
+        if (consciousnessAccount != null && NurseRoleUtils.isNurseRole(consciousnessAccount)) {
+            editUserId = consciousnessUserId;
+            editUserName = consciousnessAccount.getTrueName();
+            accountUsername = consciousnessAccount.getUsername();
+            accountProfession = consciousnessAccount.getProfession();
+        } else if (editAccount == null || !NurseRoleUtils.isNurseRole(editAccount)) {
+            editUserId = null;
+            editUserName = "";
+            accountUsername = "";
+            accountProfession = "";
+        }
+
+        NurseRecords newRecord = new NurseRecords();
+        newRecord.setPid(pid);
+        newRecord.setName(patientName);
+        newRecord.setUsername(editUserName);
+        newRecord.setUserId(editUserId);
+        newRecord.setTrueName(accountUsername);
+        newRecord.setProfessions(accountProfession);
+        newRecord.setDesc(combinedDesc);
+        newRecord.setTime(minuteTime);
+        newRecord.setCreateTime(new Date());
+        newRecord.setValid(true);
+        newRecord.setUseTimes(0);
+        newRecord.setDrugExeManualFlag(false);
+        newRecord.setAutoSyn(true);
+        NurseRecords saved = nurseRecordsRepository.insert(newRecord);
+
+        for (TypeContent content : contents) {
+            insertHistory(pid, content, minuteTime, saved.getId());
+        }
+    }
+
+    private void insertHistory(String pid, TypeContent content, Date minuteTime, String nurseRecordId) {
+        NurseRecordsHistory history = new NurseRecordsHistory();
+        history.setPid(pid);
+        history.setSyncType(content.syncType.syncType);
+        history.setTubeExeId(content.bedsideRecordId);
+        history.setTubeType(content.syncType.syncType);
+        history.setShiftType("");
+        history.setTubeRecordTime(minuteTime);
+        history.setNurseRecordId(nurseRecordId);
+        history.setSyncContent(content.desc);
+        history.setSyncTime(new Date());
+        nurseRecordsHistoryRepository.insert(history);
+    }
+
+    private Map<String, Account> loadAccounts(Set<String> editUserIds) {
+        Map<String, Account> accountMap = new HashMap<>();
+        if (editUserIds == null || editUserIds.isEmpty()) {
+            return accountMap;
+        }
+        for (Account account : accountRepository.findByIdIn(editUserIds)) {
+            accountMap.put(account.getId(), account);
+        }
+        return accountMap;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -522,7 +655,7 @@ public class BedsideSyncService {
     private String buildDescForType(SyncType st, List<Bedside> records) {
         switch (st.syncType) {
             case "ASSESSMENT_SCORE":
-                return buildDescByCodeNameMap(records, ASSESSMENT_CODE_NAME);
+                return buildDescForAssessmentScore(records);
             case "SKIN_CARE":
                 return buildDescByCodeNameMap(records, SKIN_CARE_CODE_NAME);
             case "TOOTH":
@@ -536,6 +669,31 @@ public class BedsideSyncService {
             default:
                 return "";
         }
+    }
+
+    /**
+     * 评估评分：值后统一补「分」，如 GCS评分：E3V5M6分；疼痛评分：NRS-0分。
+     */
+    private String buildDescForAssessmentScore(List<Bedside> records) {
+        Map<String, String> codeValMap = new LinkedHashMap<>();
+        for (Bedside r : records) {
+            String val = r.getStrVal().trim();
+            if (!StringUtils.hasText(val)) continue;
+            codeValMap.putIfAbsent(r.getCode(), val);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, String> entry : ASSESSMENT_CODE_NAME.entrySet()) {
+            String val = codeValMap.get(entry.getKey());
+            if (!StringUtils.hasText(val)) continue;
+            if (sb.length() > 0) sb.append("；");
+            sb.append(entry.getValue()).append("：").append(appendScoreUnit(val));
+        }
+        return sb.toString();
+    }
+
+    private String appendScoreUnit(String val) {
+        return val.endsWith("分") ? val : val + "分";
     }
 
     /**
@@ -631,148 +789,22 @@ public class BedsideSyncService {
         if (strVal.contains("-")) {
             String[] parts = strVal.split("-", 2);
             if (parts.length >= 2) {
-                return "转运分级标准:" + parts[0].trim() + ",MEWS评分:" + parts[1].trim() + "分";
+                String mewsVal = parts[1].trim().replaceAll("(?i)^MEWS\\s*", "");
+            return "转运分级标准:" + parts[0].trim() + ",MEWS评分:" + mewsVal + "分";
             }
         }
 
         if (strVal.contains("级")) {
             return "转运分级标准:" + strVal;
         } else {
-            return "MEWS评分:" + strVal + "分";
-        }
-    }
-
-    // ══════════════════════════════════════════════════════════════
-    //  合并/追加/新建 nurseRecord
-    // ══════════════════════════════════════════════════════════════
-
-    /**
-     * 合并内容到已有的自动同步记录。
-     */
-    private void mergeToExistingRecord(NurseRecords existingRecord, String desc,
-                                        String syncType, String bedsideRecordId,
-                                        Date recordTime, String pid,
-                                        String editUserId, String editUserName,
-                                        String accountUsername, String accountProfession) {
-        String oldDesc = existingRecord.getDesc();
-        String mergedDesc = StringUtils.hasText(oldDesc)
-                ? oldDesc + "；" + desc
-                : desc;
-        existingRecord.setDesc(mergedDesc);
-        existingRecord.setUsername(editUserName);
-        existingRecord.setUserId(editUserId);
-        existingRecord.setTrueName(accountUsername);
-        existingRecord.setProfessions(accountProfession);
-        nurseRecordsRepository.save(existingRecord);
-
-        // 更新或创建该 syncType 对应的 history 记录
-        NurseRecordsHistory existingHistory = findHistoryBySyncTypeAndNurseRecordId(syncType, existingRecord.getId());
-        if (existingHistory != null) {
-            existingHistory.setSyncContent(desc);
-            existingHistory.setSyncTime(new Date());
-            nurseRecordsHistoryRepository.save(existingHistory);
-        } else {
-            NurseRecordsHistory newHistory = new NurseRecordsHistory();
-            newHistory.setPid(pid);
-            newHistory.setSyncType(syncType);
-            newHistory.setTubeExeId(bedsideRecordId);
-            newHistory.setTubeType(syncType);
-            newHistory.setShiftType("");
-            newHistory.setTubeRecordTime(recordTime);
-            newHistory.setNurseRecordId(existingRecord.getId());
-            newHistory.setSyncContent(desc);
-            newHistory.setSyncTime(new Date());
-            nurseRecordsHistoryRepository.insert(newHistory);
-        }
-    }
-
-    /**
-     * 追加内容到用户手写记录。
-     * 保存前重新查询数据库获取最新 desc，避免用户正在编辑时的竞态问题。
-     */
-    private void appendToExistingRecord(NurseRecords existingRecord, String desc,
-                                         String syncType, String bedsideRecordId,
-                                         Date recordTime, String pid) {
-        // 防止重复追加：检查该 syncType 是否已对该 nurseRecord 创建过 history
-        NurseRecordsHistory existingHistory = findHistoryBySyncTypeAndNurseRecordId(syncType, existingRecord.getId());
-        if (existingHistory != null) {
-            // 更新已有 history 的内容
-            NurseRecords latest = nurseRecordsRepository.findById(existingRecord.getId()).orElse(existingRecord);
-            String oldDesc = latest.getDesc();
-            if (StringUtils.hasText(oldDesc) && oldDesc.contains(desc)) {
-                log.info("[BedsideSync] syncType={} 同步内容已存在，跳过追加 pid={}, nurseRecordId={}",
-                        syncType, pid, existingRecord.getId());
-                return;
-            }
-            // 内容有变化，更新 desc 和 history
-            String mergedDesc = StringUtils.hasText(oldDesc)
-                    ? oldDesc + "；" + desc
-                    : desc;
-            latest.setDesc(mergedDesc);
-            nurseRecordsRepository.save(latest);
-            existingHistory.setSyncContent(desc);
-            existingHistory.setSyncTime(new Date());
-            nurseRecordsHistoryRepository.save(existingHistory);
-        } else {
-            // 首次同步，追加内容并创建 history
-            NurseRecords latest = nurseRecordsRepository.findById(existingRecord.getId()).orElse(existingRecord);
-            String oldDesc = latest.getDesc();
-
-            if (StringUtils.hasText(oldDesc) && oldDesc.contains(desc)) {
-                log.info("[BedsideSync] syncType={} 同步内容已存在，跳过追加 pid={}, nurseRecordId={}",
-                        syncType, pid, existingRecord.getId());
-                return;
-            }
-
-            String mergedDesc = StringUtils.hasText(oldDesc)
-                    ? oldDesc + "；" + desc
-                    : desc;
-            latest.setDesc(mergedDesc);
-            nurseRecordsRepository.save(latest);
-
-            NurseRecordsHistory newHistory = new NurseRecordsHistory();
-            newHistory.setPid(pid);
-            newHistory.setSyncType(syncType);
-            newHistory.setTubeExeId(bedsideRecordId);
-            newHistory.setTubeType(syncType);
-            newHistory.setShiftType("");
-            newHistory.setTubeRecordTime(recordTime);
-            newHistory.setNurseRecordId(existingRecord.getId());
-            newHistory.setSyncContent(desc);
-            newHistory.setSyncTime(new Date());
-            nurseRecordsHistoryRepository.insert(newHistory);
+            String displayVal = strVal.replaceAll("(?i)^MEWS\\s*", "");
+            return "MEWS评分:" + displayVal + "分";
         }
     }
 
     // ══════════════════════════════════════════════════════════════
     //  共享 helper 方法
     // ══════════════════════════════════════════════════════════════
-
-    private String buildHistoryKey(String pid, String syncType, Date recordTime) {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyyMMddHHmm");
-        return pid + "_" + syncType + "_" + sdf.format(recordTime);
-    }
-
-    private NurseRecords createNurseRecord(String pid, String patientName,
-                                            String editUserName, String editUserId,
-                                            Bedside record, String desc,
-                                            String accountUsername, String accountProfession) {
-        NurseRecords nurseRecord = new NurseRecords();
-        nurseRecord.setPid(pid);
-        nurseRecord.setName(patientName);
-        nurseRecord.setUsername(editUserName);
-        nurseRecord.setUserId(editUserId);
-        nurseRecord.setTrueName(accountUsername);
-        nurseRecord.setProfessions(accountProfession);
-        nurseRecord.setDesc(desc);
-        nurseRecord.setTime(TimeUtils.truncateToMinute(record.getTime()));
-        nurseRecord.setCreateTime(new Date());
-        nurseRecord.setValid(true);
-        nurseRecord.setUseTimes(0);
-        nurseRecord.setDrugExeManualFlag(false);
-        nurseRecord.setAutoSyn(false);
-        return nurseRecord;
-    }
 
     private NurseRecords findExistingAutoSynRecord(String pid, Date minuteTime) {
         Date start = TimeUtils.truncateToMinute(minuteTime);
@@ -781,27 +813,9 @@ public class BedsideSyncService {
         return records.isEmpty() ? null : records.get(0);
     }
 
-    /**
-     * 根据 syncType 和 nurseRecordId 查找已有的 history 记录。
-     * 用于判断该 syncType 是否已对该护理记录同步过，避免重复创建 history。
-     */
-    private NurseRecordsHistory findHistoryBySyncTypeAndNurseRecordId(String syncType, String nurseRecordId) {
-        Query query = new Query(
-                Criteria.where("syncType").is(syncType)
-                        .and("nurseRecordId").is(nurseRecordId));
-        return smartCareMongoTemplate.findOne(query, NurseRecordsHistory.class);
-    }
-
+    /** autoSyn=true 即本服务写入，不再因 username 为护士真名而误判为手写 */
     private boolean isUserWritten(NurseRecords record) {
-        return !Boolean.TRUE.equals(record.getAutoSyn())
-               || !isSystemAccount(record.getUsername());
-    }
-
-    private boolean isSystemAccount(String username) {
-        return "系统同步".equals(username)
-               || "icu-sync".equals(username)
-               || "system".equals(username)
-               || username == null;
+        return !Boolean.TRUE.equals(record.getAutoSyn());
     }
 
     private String formatMinute(Date time) {

@@ -224,16 +224,24 @@ public class TubeNursingSyncService {
                         continue;
                     }
 
-                    // 按批次查询历史
+                    // 按批次查询历史：PIPE 用于类型去重；任意类型用于定位同分钟目标护理记录
                     List<NurseRecordsHistory> histories = nurseRecordsHistoryRepository.findByPidIn(batchPids);
-                    Map<String, NurseRecordsHistory> historyMap = histories.stream()
-                            .filter(h -> SYNC_TYPE_PIPE.equals(h.getSyncType()))
-                            .filter(h -> h.getTubeRecordTime() != null)
-                            .collect(Collectors.toMap(
-                                    h -> buildMergedHistoryKey(h.getPid(), TimeUtils.truncateToMinute(h.getTubeRecordTime())),
-                                    h -> h,
-                                    (a, b) -> a.getSyncTime() != null && b.getSyncTime() != null
-                                            && a.getSyncTime().after(b.getSyncTime()) ? a : b));
+                    Map<String, NurseRecordsHistory> historyMap = new HashMap<>();
+                    Map<String, String> nurseRecordIdByMinute = new HashMap<>();
+                    for (NurseRecordsHistory h : histories) {
+                        if (h.getTubeRecordTime() == null || !StringUtils.hasText(h.getPid())) {
+                            continue;
+                        }
+                        Date minute = TimeUtils.truncateToMinute(h.getTubeRecordTime());
+                        String minuteKey = h.getPid() + "|" + new SimpleDateFormat("yyyyMMddHHmm").format(minute);
+                        if (StringUtils.hasText(h.getNurseRecordId())) {
+                            nurseRecordIdByMinute.putIfAbsent(minuteKey, h.getNurseRecordId());
+                        }
+                        if (!SYNC_TYPE_PIPE.equals(h.getSyncType())) {
+                            continue;
+                        }
+                        historyMap.put(buildMergedHistoryKey(h.getPid(), minute), h);
+                    }
 
                     // 按患者分组处理
                     Map<String, List<Document>> tubeExeByPid = new HashMap<>();
@@ -249,7 +257,7 @@ public class TubeNursingSyncService {
 
                         try {
                             Map<String, MergeUnit> units = collectMergeUnits(pid, tubeExeDocs4Pid, configMap, syncStartTime);
-                            persistMergeUnits(pid, patientName, units, historyMap,
+                            persistMergeUnits(pid, patientName, units, historyMap, nurseRecordIdByMinute,
                                     syncedRecords, skippedRecords, updatedRecords, failedRecords);
                         } catch (Exception e) {
                             log.error("[TubeNursingSync] 处理患者管道异常 pid={}", pid, e);
@@ -480,6 +488,7 @@ public class TubeNursingSyncService {
                                    String patientName,
                                    Map<String, MergeUnit> units,
                                    Map<String, NurseRecordsHistory> historyMap,
+                                   Map<String, String> nurseRecordIdByMinute,
                                    AtomicInteger synced,
                                    AtomicInteger skipped,
                                    AtomicInteger updated,
@@ -500,8 +509,16 @@ public class TubeNursingSyncService {
                     continue;
                 }
 
-                // 无历史记录，检查同一时间点是否已有记录（可能是用户手写的，也可能是其他同步的）
-                NurseRecords existingAtTime = findExistingAutoSynRecord(pid, unit.minuteTime);
+                // 目标记录：优先 history.nurseRecordId（跨类型确定性定位），再退回时间窗查询
+                String minuteKey = pid + "|" + new SimpleDateFormat("yyyyMMddHHmm").format(unit.minuteTime);
+                NurseRecords existingAtTime = null;
+                String historyNurseId = nurseRecordIdByMinute.get(minuteKey);
+                if (StringUtils.hasText(historyNurseId)) {
+                    existingAtTime = nurseRecordsRepository.findById(historyNurseId).orElse(null);
+                }
+                if (existingAtTime == null) {
+                    existingAtTime = findExistingAutoSynRecord(pid, unit.minuteTime);
+                }
 
                 if (existingAtTime != null) {
                     // 检查是否是用户手写的
