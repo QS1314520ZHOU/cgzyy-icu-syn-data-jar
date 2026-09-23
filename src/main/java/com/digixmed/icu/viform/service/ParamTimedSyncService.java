@@ -54,7 +54,8 @@ public class ParamTimedSyncService {
     /** 已废弃不再同步的code列表 */
     private static final Set<String> DISABLED_CODES = Set.of(
             "param_插管方式",
-            "param_chaGuan_len"
+            "param_chaGuan_len",
+            "param_吸痰护理"
     );
 
     /**
