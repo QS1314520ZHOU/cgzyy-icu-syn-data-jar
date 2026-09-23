@@ -117,15 +117,37 @@ source-sync:
             - param_nibp_m
 
 # ===================================================================
-# 血糖同步配置（bloodSugar 集合驱动 + 小时分桶取最新 + 整点生成 bedside）
+# 人大金仓（KingbaseES）只读数据源（血糖视图拉取）
 # ===================================================================
-bloodsugar-sync:
-  enabled: false
-  target-code: param_XueTang
-  edit-user: 6a1f9f01e467916d244bbdaa
+kingbase:
+  url: jdbc:kingbase8://10.35.4.102:54321/ewell?currentSchema=np_nis_cqchonggang
+  username: YDCF
+  password: YDCF@123!
+  driver-class-name: com.kingbase8.Driver
+  maximum-pool-size: 5
+  read-only: true
+  connection-timeout-ms: 5000
+
+# ===================================================================
+# 血糖拉取配置（人大金仓视图 v_blood_for_zzxt → bloodSugar 集合）
+# ===================================================================
+bloodsugar-pull:
+  enabled: true
   timezone: Asia/Shanghai
-  lookback-hours: 48                      # 只处理近 48 小时内的血糖数据
-  scan-interval-ms: 300000                # 定时扫描间隔（5 分钟）
+  lookback-hours: 24                      # 回溯窗口：每轮拉取 [now-24h, now] 的录入时间
+  scan-interval-ms: 300000                # 扫描间隔：5 分钟
+  initial-delay-ms: 60000                 # 启动后延迟 1 分钟首轮
+  batch-size: 500                         # 住院号 IN 列表分批大小
+  view-schema: np_nis_cqchonggang
+  view-name: v_blood_for_zzxt
+  columns:                                # 留空=按候选列名自动解析；解析不对时看启动日志后在此覆盖
+    name:            # 姓名（仅日志旁证）
+    inhos-no:        # 住院号
+    record-time:     # 录入时间
+    type:            # 类型
+    value:           # 数值
+    note:            # 备注
+    signer:          # 签名
 
 # ===================================================================
 # 首次入科评估同步配置（bedside/score → dFormData）

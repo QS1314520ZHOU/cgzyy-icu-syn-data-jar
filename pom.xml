@@ -32,6 +32,19 @@
             <artifactId>spring-boot-starter-data-mongodb</artifactId>
         </dependency>
 
+        <!-- JDBC 访问人大金仓视图（JdbcTemplate + HikariCP） -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-jdbc</artifactId>
+        </dependency>
+
+        <!-- 人大金仓驱动 -->
+        <dependency>
+            <groupId>com.kingbase</groupId>
+            <artifactId>kingbase8</artifactId>
+            <version>9.0.0</version>
+        </dependency>
+
         <!-- Web：用于手动触发/健康检查接口，可按需删除 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

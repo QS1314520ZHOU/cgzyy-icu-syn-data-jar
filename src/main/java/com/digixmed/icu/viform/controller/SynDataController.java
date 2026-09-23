@@ -4,6 +4,7 @@ import com.digixmed.icu.viform.config.OrderSyncProperties;
 import com.digixmed.icu.viform.config.SyncGroupsProperties;
 import com.digixmed.icu.viform.entity.Bedside;
 import com.digixmed.icu.viform.service.AdmittedPatientBedsideService;
+import com.digixmed.icu.viform.service.BloodSugarPullSyncService;
 import com.digixmed.icu.viform.service.OrderSyncService;
 import com.digixmed.icu.viform.service.ParamTimedSyncService;
 import com.digixmed.icu.viform.service.FirstAdmissionAssessmentSyncService;
@@ -41,6 +42,7 @@ public class SynDataController {
     private final OrderSyncService orderSyncService;
     private final SourceDrivenSyncService sourceDrivenSyncService;
     private final FirstAdmissionAssessmentSyncService firstAdmissionAssessmentSyncService;
+    private final BloodSugarPullSyncService bloodSugarPullSyncService;
     private final SyncGroupsProperties syncGroupsProperties;
     private final OrderSyncProperties orderSyncProperties;
 
@@ -173,17 +175,30 @@ public class SynDataController {
         return Map.of("message", "源联动同步完成", "stats", result, "elapsedMs", elapsed);
     }
 
-    /**
-     * 血糖→bedside 同步已停用。
-     *
-     * @deprecated 该接口不再执行任何写入操作，始终返回停用提示。
-     */
-    @Deprecated
-    @PostMapping("/bloodsugar-sync")
-    public Map<String, Object> bloodSugarSync() {
-        log.info("[API] POST /syn/bloodsugar-sync - 血糖同步已停用");
-        return Map.of("message", "血糖到bedside同步已停用", "stats",
-                Map.of("total", 0, "success", 0, "skip", 0, "fail", 0));
+    @Operation(summary = "血糖拉取同步",
+            description = "从人大金仓视图 v_blood_for_zzxt 拉取在科患者近24h血糖数据，写入 bloodSugar 集合")
+    @PostMapping("/bloodsugar-pull")
+    public Map<String, Object> bloodSugarPull() {
+        log.info("[API] POST /syn/bloodsugar-pull - 手动触发血糖拉取");
+        long start = System.currentTimeMillis();
+        BloodSugarPullSyncService.SyncResult result = bloodSugarPullSyncService.sync();
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/bloodsugar-pull 完成: stats={}, 耗时={}ms", result, elapsed);
+        return Map.of("message", "血糖拉取完成", "stats", result.toMap(), "elapsedMs", elapsed);
+    }
+
+    @Operation(summary = "血糖全量补拉（一次性）",
+            description = "从人大金仓视图 v_blood_for_zzxt 拉取在科患者的全部历史血糖数据（不受24h回溯窗口限制），"
+                    + "写入 bloodSugar 集合。用于补患者住院超过24h时早期未拉到的数据，一般只需调用一次。"
+                    + "按 (pid, time) 防重，可重复调用。")
+    @PostMapping("/bloodsugar-pull-full")
+    public Map<String, Object> bloodSugarPullFull() {
+        log.info("[API] POST /syn/bloodsugar-pull-full - 手动触发血糖全量补拉");
+        long start = System.currentTimeMillis();
+        BloodSugarPullSyncService.SyncResult result = bloodSugarPullSyncService.syncFull();
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/bloodsugar-pull-full 完成: stats={}, 耗时={}ms", result, elapsed);
+        return Map.of("message", "血糖全量补拉完成", "stats", result.toMap(), "elapsedMs", elapsed);
     }
 
     @Operation(summary = "入科评估全量同步",

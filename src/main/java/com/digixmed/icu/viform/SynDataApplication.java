@@ -21,7 +21,11 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @SpringBootApplication(exclude = {
         MongoAutoConfiguration.class,
         MongoDataAutoConfiguration.class,
-        MongoRepositoriesAutoConfiguration.class
+        MongoRepositoriesAutoConfiguration.class,
+        // 引入 starter-jdbc 后禁用自动数据源/JdbcTemplate，由 KingbaseDataSourceConfig 手动管理
+        org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration.class,
+        org.springframework.boot.autoconfigure.jdbc.JdbcTemplateAutoConfiguration.class,
+        org.springframework.boot.autoconfigure.jdbc.DataSourceTransactionManagerAutoConfiguration.class
 })
 @ConfigurationPropertiesScan(basePackages = "com.digixmed.icu.viform.config")
 @EnableScheduling
@@ -40,8 +44,9 @@ public class SynDataApplication {
         log.info("  cgzyy-icu-syn-data-jar 启动完成");
         log.info("  时区: Asia/Shanghai (GMT+8)");
         log.info("  双数据源: SmartCare (主) + DataCenter");
+        log.info("  外部数据源: KingbaseES (血糖视图只读)");
         log.info("  定时调度: @Scheduled 每分钟轮询");
-        log.info("  接口: /syn/health /syn/process /syn/param-sync /syn/order-sync");
+        log.info("  接口: /syn/health /syn/process /syn/param-sync /syn/order-sync /syn/bloodsugar-pull");
         log.info("========================================");
     }
 }
