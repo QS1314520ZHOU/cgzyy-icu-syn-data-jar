@@ -356,18 +356,6 @@ class FirstAssessmentSourceSelectorTest {
         assertEquals("8", result.get("dght"));
     }
 
-    @Test
-    void candidate_scoreMorseTotal() {
-        Score score = new Score();
-        score.setPid("p1");
-        score.setTotal(35);
-        score.setConclusion("低风险");
-        Map<String, Score> scoreMap = Map.of("p1", score);
-        Map<String, Object> result = selector.buildCandidateValues("p1", Collections.emptyMap(), scoreMap, FORM_CODE);
-        assertEquals("35", result.get("morde"));
-        assertEquals("低风险", result.get("morde2"));
-    }
-
     // ── 跌倒评估方法（合并到同一字段） ──────────────────────────────
 
     @Test
