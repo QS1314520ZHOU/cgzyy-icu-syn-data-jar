@@ -27,7 +27,7 @@ import java.util.stream.Collectors;
 /**
  * 统一 bedside 数据同步服务。
  *
- * <p>将评估评分、皮肤护理、牙齿、降温/升温、转运评分、呼吸机参数六种 bedside 数据
+ * <p>将评估评分、皮肤护理、牙齿、降温/升温、转运评分、呼吸机参数、伤口护理七种 bedside 数据
  * 统一处理，确保同一时间点的多种数据合并到同一条护理记录中。</p>
  *
  * <p>核心策略：</p>
@@ -85,6 +85,12 @@ public class BedsideSyncService {
     private static final SyncType ST_SKIN_CARE = new SyncType("SKIN_CARE",
             Arrays.asList("param_眼部", "param_口腔", "param_耳部", "param_鼻部"), false);
 
+    /** 伤口护理：皮肤/水肿/敷料/压疮/皮瓣/造口 8 项（源参数名含 Q8H/QD 频次后缀，展示时去掉） */
+    private static final SyncType ST_WOUND_CARE = new SyncType("WOUND_CARE",
+            Arrays.asList("param_skin_pingGu", "param_水肿部位", "param_伤口敷料",
+                    "param_压疮换药", "param_皮瓣颜色", "param_皮瓣温度",
+                    "param_皮瓣质地", "param_造口"), false);
+
     /** 牙齿：1个编码 */
     private static final SyncType ST_TOOTH = new SyncType("TOOTH",
             Collections.singletonList("param_yaChi"), false);
@@ -105,7 +111,7 @@ public class BedsideSyncService {
 
     /** 所有 syncType 的处理顺序 */
     private static final List<SyncType> ALL_SYNC_TYPES = Arrays.asList(
-            ST_ASSESSMENT, ST_SKIN_CARE, ST_TOOTH,
+            ST_ASSESSMENT, ST_SKIN_CARE, ST_WOUND_CARE, ST_TOOTH,
             ST_TEMP_MEASURE, ST_TRANSFER_SCORE, ST_VENTILATOR);
 
     // ══════════════════════════════════════════════════════════════
@@ -127,6 +133,19 @@ public class BedsideSyncService {
         SKIN_CARE_CODE_NAME.put("param_口腔", "口腔黏膜");
         SKIN_CARE_CODE_NAME.put("param_耳部", "耳部");
         SKIN_CARE_CODE_NAME.put("param_鼻部", "鼻部");
+    }
+
+    /** 伤口护理：展示名不带源参数的 Q8H/QD 频次后缀 */
+    private static final Map<String, String> WOUND_CARE_CODE_NAME = new LinkedHashMap<>();
+    static {
+        WOUND_CARE_CODE_NAME.put("param_skin_pingGu", "皮肤");
+        WOUND_CARE_CODE_NAME.put("param_水肿部位", "水肿部位");
+        WOUND_CARE_CODE_NAME.put("param_伤口敷料", "伤口敷料");
+        WOUND_CARE_CODE_NAME.put("param_压疮换药", "压疮换药");
+        WOUND_CARE_CODE_NAME.put("param_皮瓣颜色", "皮瓣颜色");
+        WOUND_CARE_CODE_NAME.put("param_皮瓣温度", "皮瓣温度");
+        WOUND_CARE_CODE_NAME.put("param_皮瓣质地", "皮瓣质地");
+        WOUND_CARE_CODE_NAME.put("param_造口", "肠造口乳头");
     }
 
     private static final Map<String, String> VENTILATOR_CODE_NAME = new LinkedHashMap<>();
@@ -658,6 +677,8 @@ public class BedsideSyncService {
                 return buildDescForAssessmentScore(records);
             case "SKIN_CARE":
                 return buildDescByCodeNameMap(records, SKIN_CARE_CODE_NAME);
+            case "WOUND_CARE":
+                return buildDescByCodeNameMap(records, WOUND_CARE_CODE_NAME);
             case "TOOTH":
                 return buildDescSingleValue(records);
             case "TEMP_MEASURE":
