@@ -101,21 +101,6 @@ source-sync:
             - param_ibp_m
             - param_nibp_m
 
-    # --- 规则2: 心输出量指数触发联动 ---
-    - name: ci
-      trigger-code: param_CI(心输出量指数)
-      mappings:
-        - target-code: param_CVP
-          source-codes:
-            - param_cvp
-        - target-code: param_HR
-          source-codes:
-            - param_HR
-        - target-code: param_MAP
-          source-codes:
-            - param_ibp_m        # 有创优先
-            - param_nibp_m
-
 # ===================================================================
 # 人大金仓（KingbaseES）只读数据源（血糖视图拉取）
 # ===================================================================

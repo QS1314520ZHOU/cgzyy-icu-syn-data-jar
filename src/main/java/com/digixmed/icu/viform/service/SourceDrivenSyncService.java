@@ -63,6 +63,11 @@ public class SourceDrivenSyncService {
 
     private static final String STATUS_ADMITTED = "admitted";
 
+    /** 已废弃不再执行的触发code列表（PiCCO 心输出量指数） */
+    private static final Set<String> DISABLED_TRIGGER_CODES = Set.of(
+            "param_CI(心输出量指数)"
+    );
+
     // ==================== 入口方法 ====================
 
     /**
@@ -105,6 +110,12 @@ public class SourceDrivenSyncService {
      * 对单条规则执行扫描同步。
      */
     public Map<String, Integer> syncRule(Rule rule) {
+        // 跳过已废弃不再同步的触发code
+        if (rule.getTriggerCode() != null && DISABLED_TRIGGER_CODES.contains(rule.getTriggerCode())) {
+            log.info("[SourceSync] triggerCode={} 已废弃，跳过规则 {}", rule.getTriggerCode(), rule.getName());
+            return Map.of("total", 0, "success", 0, "skip", 0, "fail", 0);
+        }
+
         log.info("[SourceSync] 开始执行规则: name={}, triggerCode={}", rule.getName(), rule.getTriggerCode());
         int total = 0, success = 0, skip = 0, fail = 0;
 
