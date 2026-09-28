@@ -8,6 +8,7 @@ import com.digixmed.icu.viform.service.BloodSugarPullSyncService;
 import com.digixmed.icu.viform.service.OrderSyncService;
 import com.digixmed.icu.viform.service.ParamTimedSyncService;
 import com.digixmed.icu.viform.service.FirstAdmissionAssessmentSyncService;
+import com.digixmed.icu.viform.service.OtherSkinAssessSyncService;
 import com.digixmed.icu.viform.service.SourceDrivenSyncService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
@@ -42,6 +43,7 @@ public class SynDataController {
     private final OrderSyncService orderSyncService;
     private final SourceDrivenSyncService sourceDrivenSyncService;
     private final FirstAdmissionAssessmentSyncService firstAdmissionAssessmentSyncService;
+    private final OtherSkinAssessSyncService otherSkinAssessSyncService;
     private final BloodSugarPullSyncService bloodSugarPullSyncService;
     private final SyncGroupsProperties syncGroupsProperties;
     private final OrderSyncProperties orderSyncProperties;
@@ -229,6 +231,27 @@ public class SynDataController {
         long elapsed = System.currentTimeMillis() - start;
         log.info("[API] POST /syn/first-admission-assessment/{} 完成: 耗时={}ms", patientId, elapsed);
         return Map.of("success", true, "patientId", patientId, "data", result.toMap(), "elapsedMs", elapsed);
+    }
+
+    @Operation(summary = "其他皮肤情况评估同步",
+            description = "扫描skinCareInfo中type=其他皮肤情况评估的otherSkinAssessList明细，"
+                    + "按明细时间去重（只同步一次），清理多余标点后写入护理记录。"
+                    + "记录者优先取意识状态编辑人，无意识时取明细createdUser")
+    @PostMapping("/other-skin-sync")
+    public Map<String, Object> otherSkinSync() {
+        log.info("[API] POST /syn/other-skin-sync - 手动触发其他皮肤情况评估同步");
+        long start = System.currentTimeMillis();
+        OtherSkinAssessSyncService.SyncResult result = otherSkinAssessSyncService.syncAllAdmittedPatients();
+        long elapsed = System.currentTimeMillis() - start;
+        log.info("[API] POST /syn/other-skin-sync 完成: totalItems={}, 耗时={}ms", result.totalItems, elapsed);
+        return Map.of("message", "其他皮肤情况评估同步完成",
+                "totalPatients", result.totalPatients,
+                "totalItems", result.totalItems,
+                "syncedRecords", result.syncedRecords,
+                "skippedRecords", result.skippedRecords,
+                "updatedRecords", result.updatedRecords,
+                "failedRecords", result.failedRecords,
+                "elapsedMs", elapsed);
     }
 
     @Operation(summary = "查询患者bedside记录",

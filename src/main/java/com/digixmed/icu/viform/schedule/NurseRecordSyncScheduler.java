@@ -2,6 +2,7 @@ package com.digixmed.icu.viform.schedule;
 
 import com.digixmed.icu.viform.service.BedsideSyncService;
 import com.digixmed.icu.viform.service.BedsideSyncService.SyncResult;
+import com.digixmed.icu.viform.service.OtherSkinAssessSyncService;
 import com.digixmed.icu.viform.service.TubeNursingSyncService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -20,6 +21,7 @@ import org.springframework.stereotype.Component;
  * <ol>
  *   <li>BedsideSync（评估评分/皮肤护理/牙齿/体温/转运评分/呼吸机参数）</li>
  *   <li>TubeNursingSync（管道护理）</li>
+ *   <li>OtherSkinSync（其他皮肤情况评估）</li>
  * </ol>
  */
 @Slf4j
@@ -30,6 +32,7 @@ public class NurseRecordSyncScheduler {
 
     private final BedsideSyncService bedsideSyncService;
     private final TubeNursingSyncService tubeNursingSyncService;
+    private final OtherSkinAssessSyncService otherSkinAssessSyncService;
 
     @Scheduled(fixedDelayString = "${tube-nursing-sync.scan-interval-ms:300000}",
             initialDelayString = "${tube-nursing-sync.initial-delay-ms:60000}")
@@ -55,6 +58,18 @@ public class NurseRecordSyncScheduler {
                     tubeResult.updatedRecords, tubeResult.failedRecords);
         } catch (Exception e) {
             log.error("[NurseRecordSync] 管道同步异常", e);
+        }
+
+        // 3. 其他皮肤情况评估数据
+        try {
+            log.info("[NurseRecordSync] 开始同步其他皮肤情况评估数据...");
+            OtherSkinAssessSyncService.SyncResult skinResult = otherSkinAssessSyncService.syncAllAdmittedPatients();
+            log.info("[NurseRecordSync] 其他皮肤情况评估同步完成 - 患者:{} 明细:{} 新增:{} 跳过:{} 更新:{} 失败:{}",
+                    skinResult.totalPatients, skinResult.totalItems,
+                    skinResult.syncedRecords, skinResult.skippedRecords,
+                    skinResult.updatedRecords, skinResult.failedRecords);
+        } catch (Exception e) {
+            log.error("[NurseRecordSync] 其他皮肤情况评估同步异常", e);
         }
     }
 }
