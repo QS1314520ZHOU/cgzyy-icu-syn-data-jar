@@ -96,6 +96,15 @@ public class FirstAdmissionAssessmentSyncService {
                         fields.add(f);
                     }
                 }
+                // Braden 风险等级勾选字段（如告知书的 3/3m/5/6/7）同样是配置驱动，
+                // 不加入白名单会被 buildMongoFieldDataList / syncExistingForm 过滤掉
+                if (config.getBradenRiskFields() != null) {
+                    for (String f : config.getBradenRiskFields().values()) {
+                        if (StringUtils.hasText(f)) {
+                            fields.add(f);
+                        }
+                    }
+                }
             }
         }
         return new ArrayList<>(fields);

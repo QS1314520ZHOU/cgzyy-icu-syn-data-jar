@@ -151,6 +151,7 @@ first-assessment-sync:
   form-codes:
     - ruyuanhulipinggudan
     - zhuanruhulipinggudan
+    - huanzhepifusunshangfengxianjiyufanggaozhishu
   bedside-codes:
     - param_tengTong_score
     - param_yaChuang_score
@@ -169,6 +170,25 @@ first-assessment-sync:
   #    禁止猜测、禁止使用中文名称、禁止使用示例值
   #    未配置的字段将在启动时输出警告日志并跳过同步
   # 注意：form-option-configs 配置已移至 application.properties
+  #      （皮肤损伤风险告知书留在此处：选项编码含 ≥ ≤ 全角括号及句读符号，
+  #        application.properties 的编码不可控，放 yml 可确保 UTF-8 原样落库）
+  form-option-configs:
+    # 患者皮肤损伤风险及预防告知书：Braden 风险等级勾选
+    # 分值区间照抄表单：≥19 无风险 / 15-18 轻度危险 / 13-14 中度风险 / 10-12 高度风险 / ≤9 极高度风险
+    # 选项编码含括号与句尾标点，属表单定义的一部分，照抄不得改写
+    huanzhepifusunshangfengxianjiyufanggaozhishu:
+      braden-risk-fields:
+        NONE: "3"
+        MILD: "3m"
+        MODERATE: "5"
+        SEVERE: "6"
+        VERY_SEVERE: "7"
+      braden-risk-options:
+        NONE: "wufengxian(≥19fen)；"
+        MILD: "qingduweixian（15-18fen）；"
+        MODERATE: "zhongdufengxian(13-14fen)；"
+        SEVERE: "gaodufengxian(10-12fen)；"
+        VERY_SEVERE: "jigaodufengxian(≤9fen)。"
 
 # ===================================================================
 # 医嘱驱动 bedside 同步配置（param_biSiLiquid 鼻饲液）

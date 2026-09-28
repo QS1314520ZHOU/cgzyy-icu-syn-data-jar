@@ -22,6 +22,27 @@ class FirstAssessmentSourceSelectorTest {
     /** 模拟 formCode → 选项编码配置 */
     private static final String FORM_CODE = "zhuanruhulipinggudan";
 
+    /** 皮肤损伤风险及预防告知书（Braden 风险等级勾选） */
+    private static final String SKIN_FORM_CODE = "huanzhepifusunshangfengxianjiyufanggaozhishu";
+
+    /** Braden 风险勾选字段编码（照抄表单定义） */
+    private static final String RISK_FIELD_NONE = "3";
+    private static final String RISK_FIELD_MILD = "3m";
+    private static final String RISK_FIELD_MODERATE = "5";
+    private static final String RISK_FIELD_SEVERE = "6";
+    private static final String RISK_FIELD_VERY_SEVERE = "7";
+
+    /**
+     * Braden 风险勾选选项编码（照抄表单定义，含括号与句尾标点，不得改写）。
+     * <p>注意 MILD 用全角括号，其余用半角；NONE/MILD/MODERATE/SEVERE 以分号结尾，
+     * VERY_SEVERE 以句号结尾。</p>
+     */
+    private static final String RISK_OPT_NONE = "wufengxian(≥19fen)；";
+    private static final String RISK_OPT_MILD = "qingduweixian（15-18fen）；";
+    private static final String RISK_OPT_MODERATE = "zhongdufengxian(13-14fen)；";
+    private static final String RISK_OPT_SEVERE = "gaodufengxian(10-12fen)；";
+    private static final String RISK_OPT_VERY_SEVERE = "jigaodufengxian(≤9fen)。";
+
     /** 模拟的数据库选项编码（非中文、非拼音猜测，仅为测试用） */
     private static final String DEP_FIELD = "shzlnlChecked";
     private static final String DEP_OPT_NONE = "opt_dep_001";
@@ -54,6 +75,24 @@ class FirstAssessmentSourceSelectorTest {
 
         props.setFormOptionConfigs(new LinkedHashMap<>());
         props.getFormOptionConfigs().put(FORM_CODE, config);
+
+        // 皮肤损伤风险告知书：只配 Braden 风险等级勾选
+        FormOptionConfig skinConfig = new FormOptionConfig();
+        skinConfig.setBradenRiskFields(new LinkedHashMap<String, String>() {{
+            put("NONE", RISK_FIELD_NONE);
+            put("MILD", RISK_FIELD_MILD);
+            put("MODERATE", RISK_FIELD_MODERATE);
+            put("SEVERE", RISK_FIELD_SEVERE);
+            put("VERY_SEVERE", RISK_FIELD_VERY_SEVERE);
+        }});
+        skinConfig.setBradenRiskOptions(new LinkedHashMap<String, String>() {{
+            put("NONE", RISK_OPT_NONE);
+            put("MILD", RISK_OPT_MILD);
+            put("MODERATE", RISK_OPT_MODERATE);
+            put("SEVERE", RISK_OPT_SEVERE);
+            put("VERY_SEVERE", RISK_OPT_VERY_SEVERE);
+        }});
+        props.getFormOptionConfigs().put(SKIN_FORM_CODE, skinConfig);
 
         selector = new FirstAssessmentSourceSelector(props);
     }
@@ -301,6 +340,95 @@ class FirstAssessmentSourceSelectorTest {
         Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_yaChuang_score", braden));
         Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), FORM_CODE);
         assertEquals("12", result.get("braden"));
+    }
+
+    // ── Braden 风险等级勾选（皮肤损伤风险告知书） ─────────────────────
+
+    /** 取值口径与 braden 一致：param_yaChuang_score 首条 + 取数值，再按分值区间定位勾选项 */
+    private Map<String, Object> buildSkinFormCandidates(String bradenStrVal) {
+        Bedside braden = buildBedside("p1", "param_yaChuang_score", bradenStrVal,
+                parseDate("2026-08-01T11:00:00"), new Date(), "id1");
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_yaChuang_score", braden));
+        return selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), SKIN_FORM_CODE);
+    }
+
+    @Test
+    void candidate_bradenRisk_none() {
+        Map<String, Object> result = buildSkinFormCandidates("20（无风险）");
+        assertEquals(Collections.singletonList(RISK_OPT_NONE), result.get(RISK_FIELD_NONE));
+    }
+
+    @Test
+    void candidate_bradenRisk_mild() {
+        Map<String, Object> result = buildSkinFormCandidates("18（轻度危险）");
+        assertEquals(Collections.singletonList(RISK_OPT_MILD), result.get(RISK_FIELD_MILD));
+    }
+
+    @Test
+    void candidate_bradenRisk_moderate() {
+        Map<String, Object> result = buildSkinFormCandidates("13(中度风险)");
+        assertEquals(Collections.singletonList(RISK_OPT_MODERATE), result.get(RISK_FIELD_MODERATE));
+    }
+
+    @Test
+    void candidate_bradenRisk_severe() {
+        Map<String, Object> result = buildSkinFormCandidates("12(高度危险)");
+        assertEquals(Collections.singletonList(RISK_OPT_SEVERE), result.get(RISK_FIELD_SEVERE));
+    }
+
+    @Test
+    void candidate_bradenRisk_verySevere() {
+        Map<String, Object> result = buildSkinFormCandidates("8（极高度风险）");
+        assertEquals(Collections.singletonList(RISK_OPT_VERY_SEVERE), result.get(RISK_FIELD_VERY_SEVERE));
+    }
+
+    @Test
+    void candidate_bradenRisk_boundaries() {
+        // ≥19 → NONE（含 19、超过 19）
+        assertEquals(Collections.singletonList(RISK_OPT_NONE), buildSkinFormCandidates("19").get(RISK_FIELD_NONE));
+        assertEquals(Collections.singletonList(RISK_OPT_NONE), buildSkinFormCandidates("25").get(RISK_FIELD_NONE));
+        // 15-18 → MILD
+        assertEquals(Collections.singletonList(RISK_OPT_MILD), buildSkinFormCandidates("15").get(RISK_FIELD_MILD));
+        // 13-14 → MODERATE
+        assertEquals(Collections.singletonList(RISK_OPT_MODERATE), buildSkinFormCandidates("14").get(RISK_FIELD_MODERATE));
+        // 10-12 → SEVERE
+        assertEquals(Collections.singletonList(RISK_OPT_SEVERE), buildSkinFormCandidates("10").get(RISK_FIELD_SEVERE));
+        // ≤9 → VERY_SEVERE
+        assertEquals(Collections.singletonList(RISK_OPT_VERY_SEVERE), buildSkinFormCandidates("9").get(RISK_FIELD_VERY_SEVERE));
+        assertEquals(Collections.singletonList(RISK_OPT_VERY_SEVERE), buildSkinFormCandidates("0").get(RISK_FIELD_VERY_SEVERE));
+    }
+
+    @Test
+    void candidate_bradenRisk_onlyOneLevelChecked() {
+        Map<String, Object> result = buildSkinFormCandidates("12(高度危险)");
+        // 只勾选命中的那一档，其余档位字段不得出现
+        assertEquals(1, result.size());
+        assertTrue(result.containsKey(RISK_FIELD_SEVERE));
+    }
+
+    @Test
+    void candidate_bradenRisk_skipsGenericAssessmentFields() {
+        Bedside braden = buildBedside("p1", "param_yaChuang_score", "12(高度危险)",
+                parseDate("2026-08-01T11:00:00"), new Date(), "id1");
+        Bedside adl = buildBedside("p1", "param_score_adl", "90（无依赖）",
+                parseDate("2026-08-01T11:00:00"), new Date(), "id2");
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of(
+                "param_yaChuang_score", braden, "param_score_adl", adl));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), SKIN_FORM_CODE);
+        // 告知书只有风险勾选，不写 braden/branden2/shzlnl 等评估单通用字段
+        assertFalse(result.containsKey("braden"));
+        assertFalse(result.containsKey("branden2"));
+        assertFalse(result.containsKey("shzlnl"));
+        assertEquals(Collections.singletonList(RISK_OPT_SEVERE), result.get(RISK_FIELD_SEVERE));
+    }
+
+    @Test
+    void candidate_bradenRisk_noBradenSource_skips() {
+        Bedside teng = buildBedside("p1", "param_tengTong_score", "3",
+                parseDate("2026-08-01T11:00:00"), new Date(), "id1");
+        Map<String, Map<String, Bedside>> bedsideMap = Map.of("p1", Map.of("param_tengTong_score", teng));
+        Map<String, Object> result = selector.buildCandidateValues("p1", bedsideMap, Collections.emptyMap(), SKIN_FORM_CODE);
+        assertTrue(result.isEmpty());
     }
 
     @Test

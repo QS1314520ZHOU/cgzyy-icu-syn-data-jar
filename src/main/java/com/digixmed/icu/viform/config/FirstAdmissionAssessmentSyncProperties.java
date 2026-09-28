@@ -130,6 +130,22 @@ public class FirstAdmissionAssessmentSyncProperties {
         private Map<String, String> fallMethodOptions = new LinkedHashMap<>();
 
         /**
+         * Braden 风险等级 → 目标字段编码映射。
+         * <p>皮肤损伤风险告知书一类表单用「每个风险等级一个独立勾选字段」表达，
+         * 字段编码必须从真实表单定义确认，不能猜测。</p>
+         * <p>key 取值：NONE(无风险) / MILD(轻度危险) / MODERATE(中度风险) /
+         * SEVERE(高度风险) / VERY_SEVERE(极高度风险)。</p>
+         */
+        private Map<String, String> bradenRiskFields = new LinkedHashMap<>();
+
+        /**
+         * Braden 风险等级 → 数据库 option value 映射。
+         * <p>value 必须是目标表单选项的真实内部编码，含选项自带的括号与句读符号
+         * （如全角括号、分号、句号），照抄表单定义，不得改写或补齐。</p>
+         */
+        private Map<String, String> bradenRiskOptions = new LinkedHashMap<>();
+
+        /**
          * 获取 fallMethodField 列表（支持逗号分隔的多字段配置）。
          */
         public List<String> getFallMethodFieldList() {
@@ -184,6 +200,46 @@ public class FirstAdmissionAssessmentSyncProperties {
                 }
             }
         }
+
+        /**
+         * 设置 bradenRiskFields，处理空值情况。
+         */
+        public void setBradenRiskFields(Map<String, String> fields) {
+            this.bradenRiskFields = filterNonBlank(fields, "bradenRiskFields");
+        }
+
+        /**
+         * 设置 bradenRiskOptions，处理空值情况。
+         */
+        public void setBradenRiskOptions(Map<String, String> options) {
+            this.bradenRiskOptions = filterNonBlank(options, "bradenRiskOptions");
+        }
+
+        private Map<String, String> filterNonBlank(Map<String, String> source, String label) {
+            Map<String, String> result = new LinkedHashMap<>();
+            if (source == null) {
+                return result;
+            }
+            for (Map.Entry<String, String> entry : source.entrySet()) {
+                if (StringUtils.hasText(entry.getValue())) {
+                    result.put(entry.getKey(), entry.getValue());
+                } else {
+                    log.warn("[FirstAssessmentSync] 过滤空值选项: {} = {}", label + "[" + entry.getKey() + "]",
+                            entry.getValue());
+                }
+            }
+            return result;
+        }
+
+        /**
+         * 是否配置了完整的 Braden 风险等级勾选映射（字段编码 + 选项编码）。
+         * <p>配置了该映射的表单（如皮肤损伤风险告知书）只写风险等级勾选字段，
+         * 不再写 braden/branden2 等评估单通用字段。</p>
+         */
+        public boolean hasBradenRiskConfig() {
+            return bradenRiskFields != null && !bradenRiskFields.isEmpty()
+                    && bradenRiskOptions != null && !bradenRiskOptions.isEmpty();
+        }
     }
 
     // ── 配置校验 ──────────────────────────────────────────────────────
@@ -212,42 +268,79 @@ public class FirstAdmissionAssessmentSyncProperties {
                 continue;
             }
 
+            // 各能力按「已配置才校验」处理：不同表单需要的字段组不同
+            // （评估单要依赖程度/跌倒方法，告知书只要 Braden 风险勾选）
+            boolean hasDependency = StringUtils.hasText(config.getDependencyField())
+                    || (config.getDependencyOptions() != null && !config.getDependencyOptions().isEmpty());
+            boolean hasFallMethod = StringUtils.hasText(config.getFallMethodField())
+                    || (config.getFallMethodOptions() != null && !config.getFallMethodOptions().isEmpty());
+            boolean hasBradenRisk = config.hasBradenRiskConfig()
+                    || (config.getBradenRiskFields() != null && !config.getBradenRiskFields().isEmpty())
+                    || (config.getBradenRiskOptions() != null && !config.getBradenRiskOptions().isEmpty());
+
+            if (!hasDependency && !hasFallMethod && !hasBradenRisk) {
+                log.warn("[FirstAssessmentSync] formCode={} 未配置任何字段映射（dependency/fallMethod/bradenRisk），将跳过该表单", formCode);
+                valid = false;
+                continue;
+            }
+
             // 校验生活自理能力
-            if (!StringUtils.hasText(config.getDependencyField())) {
-                log.warn("[FirstAssessmentSync] formCode={} 缺少 dependencyField 配置", formCode);
-                valid = false;
-            } else if (config.getDependencyOptions() == null || config.getDependencyOptions().isEmpty()) {
-                log.warn("[FirstAssessmentSync] formCode={} 的 dependencyOptions 为空，将跳过生活自理能力同步", formCode);
-                valid = false;
-            } else {
-                for (Map.Entry<String, String> opt : config.getDependencyOptions().entrySet()) {
-                    if (!StringUtils.hasText(opt.getValue())) {
-                        log.warn("[FirstAssessmentSync] formCode={} 的 dependencyOptions[{}] 编码为空",
-                                formCode, opt.getKey());
-                        valid = false;
-                    } else if (opt.getKey().equals(opt.getValue())) {
-                        log.warn("[FirstAssessmentSync] formCode={} 的 dependencyOptions[{}] 编码与中文名称相同，疑似未配置真实编码",
-                                formCode, opt.getKey());
+            if (hasDependency) {
+                if (!StringUtils.hasText(config.getDependencyField())) {
+                    log.warn("[FirstAssessmentSync] formCode={} 缺少 dependencyField 配置", formCode);
+                    valid = false;
+                } else if (config.getDependencyOptions() == null || config.getDependencyOptions().isEmpty()) {
+                    log.warn("[FirstAssessmentSync] formCode={} 的 dependencyOptions 为空，将跳过生活自理能力同步", formCode);
+                    valid = false;
+                } else {
+                    for (Map.Entry<String, String> opt : config.getDependencyOptions().entrySet()) {
+                        if (!StringUtils.hasText(opt.getValue())) {
+                            log.warn("[FirstAssessmentSync] formCode={} 的 dependencyOptions[{}] 编码为空",
+                                    formCode, opt.getKey());
+                            valid = false;
+                        } else if (opt.getKey().equals(opt.getValue())) {
+                            log.warn("[FirstAssessmentSync] formCode={} 的 dependencyOptions[{}] 编码与中文名称相同，疑似未配置真实编码",
+                                    formCode, opt.getKey());
+                        }
                     }
                 }
             }
 
             // 校验跌倒评估方法
-            if (!StringUtils.hasText(config.getFallMethodField())) {
-                log.warn("[FirstAssessmentSync] formCode={} 缺少 fallMethodField 配置", formCode);
-                valid = false;
-            } else if (config.getFallMethodOptions() == null || config.getFallMethodOptions().isEmpty()) {
-                log.warn("[FirstAssessmentSync] formCode={} 的 fallMethodOptions 为空，将跳过跌倒评估方法同步", formCode);
-                valid = false;
-            } else {
-                for (Map.Entry<String, String> opt : config.getFallMethodOptions().entrySet()) {
-                    if (!StringUtils.hasText(opt.getValue())) {
-                        log.warn("[FirstAssessmentSync] formCode={} 的 fallMethodOptions[{}] 编码为空",
-                                formCode, opt.getKey());
-                        valid = false;
-                    } else if (opt.getKey().equals(opt.getValue())) {
-                        log.warn("[FirstAssessmentSync] formCode={} 的 fallMethodOptions[{}] 编码与中文名称相同，疑似未配置真实编码",
-                                formCode, opt.getKey());
+            if (hasFallMethod) {
+                if (!StringUtils.hasText(config.getFallMethodField())) {
+                    log.warn("[FirstAssessmentSync] formCode={} 缺少 fallMethodField 配置", formCode);
+                    valid = false;
+                } else if (config.getFallMethodOptions() == null || config.getFallMethodOptions().isEmpty()) {
+                    log.warn("[FirstAssessmentSync] formCode={} 的 fallMethodOptions 为空，将跳过跌倒评估方法同步", formCode);
+                    valid = false;
+                } else {
+                    for (Map.Entry<String, String> opt : config.getFallMethodOptions().entrySet()) {
+                        if (!StringUtils.hasText(opt.getValue())) {
+                            log.warn("[FirstAssessmentSync] formCode={} 的 fallMethodOptions[{}] 编码为空",
+                                    formCode, opt.getKey());
+                            valid = false;
+                        } else if (opt.getKey().equals(opt.getValue())) {
+                            log.warn("[FirstAssessmentSync] formCode={} 的 fallMethodOptions[{}] 编码与中文名称相同，疑似未配置真实编码",
+                                    formCode, opt.getKey());
+                        }
+                    }
+                }
+            }
+
+            // 校验 Braden 风险等级勾选
+            if (hasBradenRisk) {
+                if (!config.hasBradenRiskConfig()) {
+                    log.warn("[FirstAssessmentSync] formCode={} 的 bradenRiskFields/bradenRiskOptions 未配全，将跳过 Braden 风险勾选同步", formCode);
+                    valid = false;
+                } else {
+                    for (String level : Arrays.asList("NONE", "MILD", "MODERATE", "SEVERE", "VERY_SEVERE")) {
+                        String field = config.getBradenRiskFields().get(level);
+                        String option = config.getBradenRiskOptions().get(level);
+                        if (!StringUtils.hasText(field) || !StringUtils.hasText(option)) {
+                            log.warn("[FirstAssessmentSync] formCode={} 的 Braden 风险等级 {} 缺少字段或选项编码", formCode, level);
+                            valid = false;
+                        }
                     }
                 }
             }

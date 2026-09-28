@@ -204,6 +204,17 @@ public class FirstAssessmentSourceSelector {
         Map<String, Bedside> pidBedside = bedsideMap.getOrDefault(pid, Collections.emptyMap());
         log.info("[FirstAssessmentSync] pid={} bedside命中codes={}, 期望codes={}",
                 pid, pidBedside.keySet(), properties.getBedsideCodes());
+
+        // 1a0. Braden 风险等级勾选表单（如皮肤损伤风险告知书）：
+        //      取值口径与 zhuanruhulipinggudan 的 braden 一致（param_yaChuang_score 首条 + 取数值），
+        //      但落库只写对应风险等级的勾选字段，不再写 braden/branden2 等评估单通用字段。
+        if (optionConfig != null && optionConfig.hasBradenRiskConfig()) {
+            resolveAndPutBradenRiskOption(pidBedside, optionConfig, candidates);
+            log.info("[FirstAssessmentSync] pid={} formCode={} Braden风险勾选 candidates: {}",
+                    pid, formCode, candidates.keySet());
+            return candidates;
+        }
+
         for (Map.Entry<String, String> entry : SCORE_FIELD_MAPPING.entrySet()) {
             Bedside source = pidBedside.get(entry.getKey());
             if (source == null) continue;
@@ -364,6 +375,68 @@ public class FirstAssessmentSourceSelector {
     }
 
     // ==================== 选项解析 ====================
+
+    /**
+     * Braden 风险等级 → 配置 key。
+     *
+     * <p>分档区间照抄表单印制的 Braden 评估量表分值：≥19 无风险 / 15-18 轻度危险 /
+     * 13-14 中度风险 / 10-12 高度风险 / ≤9 极高度风险。</p>
+     */
+    private String resolveBradenRiskLevelKey(double score) {
+        if (score >= 19) return "NONE";
+        if (score >= 15) return "MILD";
+        if (score >= 13) return "MODERATE";
+        if (score >= 10) return "SEVERE";
+        return "VERY_SEVERE";
+    }
+
+    /**
+     * 根据 Braden 分值写入对应风险等级的勾选字段。
+     *
+     * <p>取值与 {@code zhuanruhulipinggudan} 的 braden 一致：param_yaChuang_score 首条有效数据，
+     * 用 {@link #extractScoreOnly} 取数值；再按分值区间定位风险等级，
+     * 从配置取该等级的字段编码和选项编码，写成 List&lt;String&gt;（与 lcpdf 一致）。</p>
+     *
+     * @param pidBedside   该患者 code → 首条有效 bedside
+     * @param optionConfig 当前表单的选项配置（必须已配 bradenRisk）
+     * @param candidates   候选值 map，直接写入
+     */
+    private void resolveAndPutBradenRiskOption(Map<String, Bedside> pidBedside,
+                                               FormOptionConfig optionConfig,
+                                               Map<String, Object> candidates) {
+        Bedside source = pidBedside.get("param_yaChuang_score");
+        if (source == null || !StringUtils.hasText(source.getStrVal())) {
+            log.debug("[FirstAssessmentSync] Braden 风险勾选跳过: param_yaChuang_score 无数据, bedside keys={}",
+                    pidBedside.keySet());
+            return;
+        }
+
+        String scoreText = extractScoreOnly(source.getStrVal());
+        if (!StringUtils.hasText(scoreText)) {
+            log.warn("[FirstAssessmentSync] Braden 分数无法解析，跳过风险勾选: {}", source.getStrVal());
+            return;
+        }
+
+        double score;
+        try {
+            score = Double.parseDouble(scoreText.trim());
+        } catch (NumberFormatException e) {
+            log.warn("[FirstAssessmentSync] Braden 分数无法解析，跳过风险勾选: {}", source.getStrVal());
+            return;
+        }
+
+        String levelKey = resolveBradenRiskLevelKey(score);
+        String field = optionConfig.getBradenRiskFields().get(levelKey);
+        String option = optionConfig.getBradenRiskOptions().get(levelKey);
+        if (!StringUtils.hasText(field) || !StringUtils.hasText(option)) {
+            log.warn("[FirstAssessmentSync] Braden 风险等级 {} 的字段/选项编码未配置，跳过 (score={})", levelKey, scoreText);
+            return;
+        }
+
+        candidates.put(field, Collections.singletonList(option));
+        log.info("[FirstAssessmentSync] Braden={} → 风险等级={} field={} option={}",
+                scoreText, levelKey, field, option);
+    }
 
     /**
      * 解析生活自理能力的依赖程度，写入配置的字段和选项编码。
