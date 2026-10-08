@@ -1,5 +1,6 @@
 package com.digixmed.icu.viform.service;
 
+import com.digixmed.icu.viform.common.DescUtils;
 import com.digixmed.icu.viform.common.TimeUtils;
 import com.digixmed.icu.viform.config.TubeNursingSyncProperties;
 import com.digixmed.icu.viform.entity.Account;
@@ -528,12 +529,9 @@ public class TubeNursingSyncService {
                         synced.incrementAndGet();
                         log.info("[TubeNursingSync] 追加管道数据到用户记录 pid={}, nurseRecordId={}", pid, existingAtTime.getId());
                     } else {
-                        // 其他同步记录 → 管道数据拼接到已有记录前面
+                        // 其他同步记录 → 管道数据拼接到已有记录前面（结尾统一为「。」）
                         String oldDesc = existingAtTime.getDesc();
-                        String mergedDesc = StringUtils.hasText(desc)
-                                ? desc + "；" + oldDesc
-                                : oldDesc;
-                        existingAtTime.setDesc(mergedDesc);
+                        existingAtTime.setDesc(DescUtils.merge(desc, oldDesc));
                         existingAtTime.setUsername(unit.recordUserName);
                         existingAtTime.setUserId(unit.recordUserId);
                         existingAtTime.setTrueName(unit.accountUsername);
@@ -606,7 +604,7 @@ public class TubeNursingSyncService {
         nurseRecord.setUserId(unit.recordUserId);
         nurseRecord.setTrueName(unit.accountUsername);
         nurseRecord.setProfessions(unit.accountProfession);
-        nurseRecord.setDesc(desc);
+        nurseRecord.setDesc(DescUtils.withPeriodEnding(desc));
         nurseRecord.setTime(unit.minuteTime);
         nurseRecord.setCreateTime(new Date());
         nurseRecord.setValid(true);
@@ -624,6 +622,9 @@ public class TubeNursingSyncService {
      *
      * <p>格式：{管道名}：{字段名}:{值};{字段名}:{值};</p>
      * <p>例：胃管：置入长度:55cm;固定情况:妥善固定;</p>
+     *
+     * <p>这里是单条片段的原始文本，末尾的「;」是字段分隔符；
+     * 写入护理记录时由 {@link com.digixmed.icu.viform.common.DescUtils} 统一改成以「。」结尾。</p>
      *
      * <p>按业务要求不再输出「时间」和「操作人」：
      * 时间已由护理记录本身的 time 字段体现，操作人由 username 字段体现，
@@ -710,10 +711,8 @@ public class TubeNursingSyncService {
             return;
         }
 
-        String mergedDesc = StringUtils.hasText(oldDesc)
-                ? oldDesc + "；" + desc
-                : desc;
-        latest.setDesc(mergedDesc);
+        // 合并后统一以「。」结尾，不再以「；」结尾
+        latest.setDesc(DescUtils.merge(oldDesc, desc));
         // [修改记录] 2026-08-22 易绍龙: 追加时不覆盖用户的 username/userId/trueName/professions
         nurseRecordsRepository.save(latest);
 

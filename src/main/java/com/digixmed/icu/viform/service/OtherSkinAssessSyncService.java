@@ -1,5 +1,6 @@
 package com.digixmed.icu.viform.service;
 
+import com.digixmed.icu.viform.common.DescUtils;
 import com.digixmed.icu.viform.common.TimeUtils;
 import com.digixmed.icu.viform.config.TubeNursingSyncProperties;
 import com.digixmed.icu.viform.entity.Account;
@@ -446,10 +447,8 @@ public class OtherSkinAssessSyncService {
                                    String pid, List<SkinItem> items) {
         String oldDesc = target.getDesc();
         if (!StringUtils.hasText(oldDesc) || !oldDesc.contains(combinedDesc)) {
-            String merged = StringUtils.hasText(oldDesc)
-                    ? oldDesc + "；" + combinedDesc
-                    : combinedDesc;
-            target.setDesc(merged);
+            // 合并后统一以「。」结尾，不再以「；」结尾
+            target.setDesc(DescUtils.merge(oldDesc, combinedDesc));
             // 自动同步记录刷新操作人；用户手写记录不覆盖
             if (!isUserWritten(target)) {
                 target.setUsername(recorder.username);
@@ -473,7 +472,7 @@ public class OtherSkinAssessSyncService {
         newRecord.setUserId(recorder.userId);
         newRecord.setTrueName(recorder.trueName);
         newRecord.setProfessions(recorder.professions);
-        newRecord.setDesc(combinedDesc);
+        newRecord.setDesc(DescUtils.withPeriodEnding(combinedDesc));
         newRecord.setTime(minuteTime);
         newRecord.setCreateTime(new Date());
         newRecord.setValid(true);
